@@ -2,6 +2,37 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## v2.10.2 - The spill judgment keys only the subject, and decontam keeps gold
+
+- `video-frames --spill auto` (and `video-set`, which judges each item's `canvas.png`) keys only the subject window of the reference still instead of the whole still. A canvas padded for motion room is mostly key, and keying all of it cost about 0.14 GiB more per megapixel of canvas, past 4 GiB for a 30-megapixel canvas, while keying the frames themselves stays near 1 GiB. The window is the box of pixels the hard cut cannot erase plus one keyed pixel all round, and the painted key is read on the whole still, so it gives exactly the whole still's counts: the decision and the frames do not change. A window over 6 megapixels is judged on every n-th pixel instead; the report records `reference_size`, `reference_window` and `reference_stride`. Background-key detection now reads an image a band of rows at a time. On synthetic padded canvases the judgment peaks at 0.42 to 0.56 GiB from 8 to 39 megapixels, and a synthetic 1080p clip judged against a 39-megapixel canvas runs `video-frames --decontam palette` in 1.1 GiB.
+- `--decontam` keeps gold and yellow on stills. A gold a little darker or yellower than the palette's own read as a warmer palette gold with some green mixed in, so gold edges and small gold drops came out orange and partly see-through. The still fit now counts a palette colour at the pixel's own luma as the subject's colour within the subject's own spread (how far its interior sits from the palette); a pixel deeper than a still's antialiased edge (2 px) without the key's hue, or an edge pixel with the colour of the material right behind it, is the subject's own colour; and where the matte changed such a pixel it gets its source colour and coverage back. That last part matters for `cutout`, whose RGB matte scores key tint on the channel average: that calls yellow green, so the matte unmixed gold by itself. On a synthetic gold scene every decontam path now matches the clean YCbCr matte, where `cutout --decontam palette` left 39 % of the solid gold edge see-through. On the procedural ground-truth set key contamination falls from 0.07 % to 0.03 % (RGB matte) and from 0.16 % to 0.12 % (YCbCr matte), halos shrink and recall stays the same. The video fit is unchanged. Reports gain `material_spread` and `restored_px`. Method: [docs/chroma-alpha.md](docs/chroma-alpha.md#decontam--give-the-edge-the-subjects-own-colour-back).
+
+### Gold showcase
+
+A synthetic gold scene (the fixture of `tests/frames/test_decontam_gold.py`) through `cutout --decontam palette` (RGB matte) and `gen`'s YCbCr matte with decontam, v2.10.1 then v2.10.2, on dark and on white.
+
+![Gold drops and strokes before and after](https://github.com/aldegad/sprite-gen/releases/download/v2.10.2/decontam-gold.gif)
+
+## v2.10.1 - Attacks keep the grip the image shows
+
+- `MOTION_TEXT["attack"]` no longer names one hand. What the subject holds is kept exactly as gripped in the image — one hand stays one hand, both hands stay both hands — and is never let go, switched to the other hand or taken in an extra hand. Naming the hand nearest the viewer for a weapon the still draws in both hands made the clip let go of it on the windup and grab it again for the strike.
+
+## v2.10.0 - Edge decontamination gives thin strands their own colour back
+
+- Add opt-in edge decontamination, `--decontam auto|palette` (request `chroma.decontam` for the row extractor and `inspect`). After the matte, each edge pixel is explained as a blend of the locally measured key background with one colour from a palette learned on the subject's own interior. The colour written is that palette colour at the pixel's observed luma, so thin hair strands and outlines come back in the subject's hue: not green, and not the orange that despill's channel gain produces. `palette` demands the pass and fails where it cannot run; `auto` runs it wherever it applies and records why it did not elsewhere. Available on `cutout`, `gen --transparent` (chroma keying), `video-frames` / `video-set` (video fit, one palette per clip) and the row extractor. Every default stays `off`, which returns existing output byte for byte. On a procedural ground-truth set, key contamination at the edge falls from 22.5 % to 0.07 % on stills and from 33 % to 11 % on H.264 frames; halo against the true composite shrinks on dark and white backgrounds, and strand recall rises from 84 % to 99 % (stills) and from 82 % to 91 % (frames). Method, guards and limits: [docs/chroma-alpha.md](docs/chroma-alpha.md).
+
+## v2.9.0 - Idle stands still and closes on its first frame
+
+- `MOTION_TEXT["idle"]` keeps both feet planted flat for the whole clip, limits the motion to breathing, a settle of the arms, hair and loose cloth and one blink, and names walking and marching in place as what not to do. A side-view full body asked for "a subtle weight sway" and an evenly paced loop tended to step in place.
+- Idle is pinned to end on its first frame (`PIN_LAST_FRAME_STATES`) and its template (`PINNED_LOOP_TEXT`) asks for that return instead of an evenly paced repeating motion.
+- `video-loop --cycle pinned` keeps a pinned clip whole as the loop (every frame but the last, which re-renders the first) and gates it on the pin: the last frame has to land within `max(seam_max x the mean step, PIN_NOISE_MAX)` of the first. A near-still idle moves so little per frame that the seam ratio read its re-render noise as a jump. A clip that ends in another pose fails with its own message. `video-set` cuts idle this way (`PINNED_LOOP_STATES`).
+
+### Idle showcase
+
+Nine side-view idles before and after this release, each strip played at its own speed (`idle-nine.mp4` is the same comparison as video).
+
+![Nine idle loops before and after](https://github.com/aldegad/sprite-gen/releases/download/v2.9.0/idle-nine.gif)
+
 ## v2.8.1 - Tight clips pass their own edge and corner checks
 
 - `video-frames --allow-subject-edge-contact` fails only on a frame where the key alone reaches the edge. A frame where the subject touches the edge carries key-tinted pixels beside it (its antialiased fringe, or the key reflected on metal) and is accepted with them, the same reading a mixed contact already had in the refusal message. Before, a few such pixels failed a tight clip as leftover background.
