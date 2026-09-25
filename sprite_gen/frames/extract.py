@@ -1164,17 +1164,7 @@ def fit_to_cell(
     max_height = max(1, cell_height - safe_margin_y * 2)
     scale = min(max_width / sprite.width, max_height / sprite.height, 1.0)
     if scale != 1.0:
-        new_size = (max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale)))
-        if resample_name == "kcentroid":
-            sprite = _kcentroid_downscale(sprite, new_size[0], new_size[1])
-        else:
-            sprite = sprite.resize(
-                new_size,
-                Image.Resampling.NEAREST if resample_name == "nearest" else Image.Resampling.LANCZOS,
-            )
-        cropped = sprite.getbbox()
-        if cropped is not None:
-            sprite = sprite.crop(cropped)
+        sprite = _rescale_sprite(sprite, scale, resample_name)
     if align_x == "foot-centroid":
         left = round(cell_width / 2.0 - _alpha_centroid_x(sprite, 0.2))
         left = max(0, min(cell_width - sprite.width, left))
@@ -1192,6 +1182,194 @@ def fit_to_cell(
         top = (cell_height - sprite.height) // 2
     target.alpha_composite(sprite, (left, top))
     return target
+
+
+def _rescale_sprite(sprite: Image.Image, scale: float, resample_name: str) -> Image.Image:
+    """Resize a content-cropped sprite by `scale` with the fit's resampler, re-cropped
+    to its content bbox (resampling can leave empty edge rows/columns)."""
+    new_size = (max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale)))
+    if resample_name == "kcentroid":
+        sprite = _kcentroid_downscale(sprite, new_size[0], new_size[1])
+    else:
+        sprite = sprite.resize(
+            new_size,
+            Image.Resampling.NEAREST if resample_name == "nearest" else Image.Resampling.LANCZOS,
+        )
+    cropped = sprite.getbbox()
+    return sprite.crop(cropped) if cropped is not None else sprite
+
+
+# --- row fit (fit.row_scale / align_x "torso" / fit.strip_panel_lines) -----
+# fit_to_cell fits every frame on its own: each frame is scaled until its own
+# bbox fills the safe area and slid sideways by its own anchor. Across a row
+# that reads as the body jumping left/right (a stride or a thrust moves the
+# foot centroid and the bbox) and pulsing in size (a raised weapon makes the
+# bbox taller, so that frame shrinks), and reaching frames get clipped at the
+# cell edge. The row fit keeps a generated strip's in-row proportions: one
+# scale per row, the body (not the bbox) on the cell axis, and a scale small
+# enough that the anchored frame still fits between the cell edges.
+
+TORSO_BAND = (0.45, 0.90)  # torso band, as fractions of the row's median body height above the baseline
+ROW_FIT_EDGE_PAD = 2  # px kept clear at the left/right cell edges
+
+
+def row_fit_enabled(fit: dict[str, Any] | None) -> bool:
+    fit = fit or {}
+    return bool(fit.get("row_scale")) or str(fit.get("align_x", "")).lower() == "torso"
+
+
+def _torso_anchor_x(sprite: Image.Image, body_height: float) -> float:
+    """Body axis: the median, over the rows of the torso band (shoulders to waist,
+    measured up from the sprite's bottom), of each row's widest opaque span center.
+    The widest span of a row is the body's cross-section; a thrust weapon, a sleeve
+    or a trailing leg only lengthens a few rows, which the median ignores — unlike a
+    centroid or bbox center, which they pull off the body."""
+    opaque = np.asarray(sprite.getchannel("A")) >= 128
+    height = opaque.shape[0]
+    top = max(0, round(height - TORSO_BAND[1] * body_height))
+    bottom = max(top + 1, round(height - TORSO_BAND[0] * body_height))
+    centers = []
+    for row in opaque[top:bottom]:
+        spans = _long_runs(row, 1, 0)
+        if spans:
+            start, end = max(spans, key=lambda span: span[1] - span[0])
+            centers.append((start + end + 1) / 2.0)
+    if not centers:
+        xs = np.nonzero(opaque)[1]
+        return float(np.median(xs)) + 0.5 if xs.size else sprite.width / 2.0
+    return float(np.median(centers))
+
+
+def _row_anchor_x(sprite: Image.Image, body_height: float, align_x: str) -> float:
+    if align_x == "torso":
+        return _torso_anchor_x(sprite, body_height)
+    if align_x == "foot-centroid":
+        return _alpha_centroid_x(sprite, 0.2)
+    if align_x == "centroid":
+        return _alpha_centroid_x(sprite)
+    if align_x == "alpha-centroid":
+        return _alpha_centroid_x(sprite, 1.0, ALPHA_CENTROID_MIN_ALPHA)
+    return sprite.width / 2.0
+
+
+def fit_row_to_cells(
+    images: list[Image.Image],
+    cell_width: int,
+    cell_height: int,
+    safe_margin_x: int,
+    safe_margin_y: int,
+    fit: dict[str, Any] | None = None,
+) -> list[Image.Image]:
+    """Fit a whole row with every frame's anchor on the cell axis.
+
+    A frame is scaled so its median-height pose fills the safe height (the size the
+    per-frame fit gives a typical frame), but never so far that — anchored on the
+    axis — it would cross a cell edge: ROW_FIT_EDGE_PAD from the left, right and top
+    (a taller pose, e.g. a raised weapon, may use the top safe margin; the horizontal
+    safe margin is not applied, since the anchor, not the bbox, is centered). With
+    fit.row_scale the row shares the smallest such scale, so a reaching pose shrinks
+    the row instead of being clipped, pushing the body off the axis, or pulsing."""
+    fit = fit or {}
+    resample_name = str(fit.get("resample", "lanczos")).lower()
+    align_x = str(fit.get("align_x", "foot-centroid")).lower()
+    align_y = str(fit.get("align_y", "bottom")).lower()
+    sprites: list[Image.Image | None] = []
+    for image in images:
+        bbox = image.getbbox()
+        sprites.append(image.crop(bbox) if bbox is not None else None)
+    present = [sprite for sprite in sprites if sprite is not None]
+    targets = [Image.new("RGBA", (cell_width, cell_height), (0, 0, 0, 0)) for _ in images]
+    if not present:
+        return targets
+
+    body_height = median(sprite.height for sprite in present)
+    half_width = max(1.0, cell_width / 2.0 - ROW_FIT_EDGE_PAD)
+    typical = min(max(1, cell_height - safe_margin_y * 2) / body_height, 1.0)
+    if align_y == "bottom":
+        height_limit = max(1, cell_height - safe_margin_y - ROW_FIT_EDGE_PAD)
+    else:
+        height_limit = max(1, cell_height - ROW_FIT_EDGE_PAD * 2)
+
+    def frame_scale(sprite: Image.Image) -> float:
+        anchor = _row_anchor_x(sprite, body_height, align_x)
+        reach = max(anchor, sprite.width - anchor, 1.0)
+        return min(typical, half_width / reach, height_limit / sprite.height)
+
+    shared = min(frame_scale(sprite) for sprite in present) if fit.get("row_scale") else None
+    for index, sprite in enumerate(sprites):
+        if sprite is None:
+            continue
+        scale = shared if shared is not None else frame_scale(sprite)
+        if scale != 1.0:
+            sprite = _rescale_sprite(sprite, scale, resample_name)
+        anchor = _row_anchor_x(sprite, body_height * scale, align_x)
+        left = max(0, min(cell_width - sprite.width, round(cell_width / 2.0 - anchor)))
+        if align_y == "bottom":
+            top = max(0, cell_height - safe_margin_y - sprite.height)
+        else:
+            top = (cell_height - sprite.height) // 2
+        targets[index].alpha_composite(sprite, (left, top))
+    return targets
+
+
+def _long_runs(mask: np.ndarray, min_length: int, max_gap: int) -> list[tuple[int, int]]:
+    """(start, end) of the True runs in a 1-D mask at least `min_length` long, bridging
+    gaps of up to `max_gap` (anti-aliased lines drop the odd pixel)."""
+    index = np.flatnonzero(mask)
+    if index.size == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(index) > max_gap + 1)
+    starts = np.concatenate(([index[0]], index[breaks + 1]))
+    ends = np.concatenate((index[breaks], [index[-1]]))
+    return [(int(s), int(e)) for s, e in zip(starts, ends) if e - s + 1 >= min_length]
+
+
+def strip_panel_lines(
+    strip: Image.Image,
+    frame_count: int,
+    thickness: int = 3,
+    vertical_fraction: float = 0.6,
+    horizontal_fraction: float = 0.5,
+    max_gap: int = 4,
+) -> tuple[Image.Image, int]:
+    """Erase the panel borders an image model sometimes draws around each pose: thin
+    (≤ `thickness` px) axis-aligned lines, vertical ones spanning at least
+    `vertical_fraction` of the strip height and horizontal ones at least
+    `horizontal_fraction` of one frame slot. Such lines touch or surround the pose,
+    so component grouping merges them into the frame and its bbox balloons (the
+    frame is fitted tiny) or they show up as stray lines in the cell. Shorter thin
+    lines — a bow string, an arrow — are kept. Returns the cleaned strip and the
+    number of erased pixels."""
+    rgba = np.array(strip.convert("RGBA"))
+    opaque = rgba[:, :, 3] > 16
+    height, width = opaque.shape
+    reach = thickness + 1
+    padded = np.pad(opaque, reach)
+    # A pixel is part of a vertical line when the pixels `reach` to its left and right
+    # are both clear (so the line is at most 2*reach-1 wide); likewise horizontally.
+    vertical = opaque & ~padded[reach:-reach, :width] & ~padded[reach:-reach, 2 * reach:2 * reach + width]
+    horizontal = opaque & ~padded[:height, reach:-reach] & ~padded[2 * reach:2 * reach + height, reach:-reach]
+    lines = np.zeros_like(opaque)
+    min_vertical = max(1, round(height * vertical_fraction))
+    min_horizontal = max(1, round(width / max(1, frame_count) * horizontal_fraction))
+    for x in range(width):
+        for start, end in _long_runs(vertical[:, x], min_vertical, max_gap):
+            lines[start:end + 1, x] = True
+    for y in range(height):
+        for start, end in _long_runs(horizontal[y, :], min_horizontal, max_gap):
+            lines[y, start:end + 1] = True
+    # Take in the line's own neighbouring pixels (lines are 1-3 px wide).
+    grown = lines.copy()
+    for step in range(1, thickness):
+        grown[:, step:] |= lines[:, :-step] & opaque[:, step:]
+        grown[:, :-step] |= lines[:, step:] & opaque[:, :-step]
+        grown[step:, :] |= lines[:-step, :] & opaque[step:, :]
+        grown[:-step, :] |= lines[step:, :] & opaque[:-step, :]
+    erased = int(grown.sum())
+    if erased == 0:
+        return strip, 0
+    rgba[grown] = (0, 0, 0, 0)
+    return Image.fromarray(rgba, "RGBA"), erased
 
 
 # --- pixel unfake pipeline (fit.pixel_unfake) -----------------------------
@@ -2437,17 +2615,18 @@ def extract_component_frames(strip: Image.Image, frame_count: int, cell_width: i
     images = extract_component_images(strip, frame_count)
     if images is None:
         return None
+    if row_fit_enabled(fit):
+        return fit_row_to_cells(images, cell_width, cell_height, safe_margin_x, safe_margin_y, fit)
     return [fit_to_cell(image, cell_width, cell_height, safe_margin_x, safe_margin_y, fit) for image in images]
 
 
 def extract_slot_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None) -> list[Image.Image]:
     slot_width = strip.width / frame_count
-    frames = []
-    for index in range(frame_count):
-        left = round(index * slot_width)
-        right = round((index + 1) * slot_width)
-        frames.append(fit_to_cell(strip.crop((left, 0, right, strip.height)), cell_width, cell_height, safe_margin_x, safe_margin_y, fit))
-    return frames
+    slots = [strip.crop((round(index * slot_width), 0, round((index + 1) * slot_width), strip.height))
+             for index in range(frame_count)]
+    if row_fit_enabled(fit):
+        return fit_row_to_cells(slots, cell_width, cell_height, safe_margin_x, safe_margin_y, fit)
+    return [fit_to_cell(slot, cell_width, cell_height, safe_margin_x, safe_margin_y, fit) for slot in slots]
 
 
 def chroma_adjacent_count(image: Image.Image, chroma_key: tuple[int, int, int], threshold: float) -> int:
@@ -3268,6 +3447,10 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
             strip = _load_strip(state, state, raw_rel(request, state), frame_count)
             if strip is None:
                 continue
+            if fit_config.get("strip_panel_lines"):
+                strip, erased = strip_panel_lines(strip, frame_count)
+                if erased:
+                    all_warnings.append(f"{state}: erased {erased} panel-line pixel(s)")
             frames = extract_component_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config)
             method = "components"
             if frames is None:

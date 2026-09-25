@@ -980,6 +980,8 @@ def _run(args: argparse.Namespace):
         "align_x": args.fit_align_x,
         "align_y": args.fit_align_y,
         "ground_frames": args.fit_ground_frames,
+        "row_scale": getattr(args, "fit_row_scale", None),
+        "strip_panel_lines": getattr(args, "fit_strip_panel_lines", None),
         "pixel_unfake": args.fit_pixel_unfake,
         "logical_height": args.fit_logical_height,
         "palette_size": args.fit_palette_size,
