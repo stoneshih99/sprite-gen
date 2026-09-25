@@ -65,9 +65,13 @@ def _add_prepare(p: argparse.ArgumentParser) -> None:
     p.add_argument("--safe-margin", type=int, default=None, help="absolute px override; default is 9.4%% of the cell dimension, floored")
     p.add_argument("--chroma-key", default="auto", help="auto or #RRGGBB")
     p.add_argument("--fit-resample", choices=["lanczos", "nearest", "kcentroid"], default=None)
-    p.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid"], default=None)
+    p.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid", "torso"], default=None)
     p.add_argument("--fit-align-y", choices=["center", "bottom"], default=None)
     p.add_argument("--fit-ground-frames", action=argparse.BooleanOptionalAction, default=None)
+    p.add_argument("--fit-row-scale", action=argparse.BooleanOptionalAction, default=None,
+                   help="one scale per row, so reaching poses shrink the row instead of pulsing or clipping")
+    p.add_argument("--fit-strip-panel-lines", action=argparse.BooleanOptionalAction, default=None,
+                   help="erase long thin panel borders the image model draws around poses")
     p.add_argument("--fit-pixel-unfake", action=argparse.BooleanOptionalAction, default=None)
     # 은퇴한 이름. 조용한 별칭으로 살려두지 않는다 — 두 이름이 공존하면 문서와 스크립트가
     # 갈라진다. 대신 무엇으로 바뀌었는지 말하며 죽는다 (숨은 인자라 --help 를 어지럽히지 않음).
