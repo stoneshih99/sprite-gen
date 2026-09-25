@@ -2,6 +2,10 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
+## Unreleased (fork) - One body height across state rows
+
+- Component-row fit takes `fit.body_height` (px) and `fit.pose_heights` (`{state: ratio}`). Each row's median solid height — measured after an opening that drops parts thinner than 4 % of the pose, so a raised weapon does not count — is fitted to `body_height × pose_heights[state]`, so a character drawn at different sizes in separately generated rows comes out one size, and a kneel no longer grows to the standing height. Without `body_height` nothing changes. `state_fit()` resolves a row's ratio; `solid_height()` is the measurement.
+
 ## v2.10.2 - The spill judgment keys only the subject, and decontam keeps gold
 
 - `video-frames --spill auto` (and `video-set`, which judges each item's `canvas.png`) keys only the subject window of the reference still instead of the whole still. A canvas padded for motion room is mostly key, and keying all of it cost about 0.14 GiB more per megapixel of canvas, past 4 GiB for a 30-megapixel canvas, while keying the frames themselves stays near 1 GiB. The window is the box of pixels the hard cut cannot erase plus one keyed pixel all round, and the painted key is read on the whole still, so it gives exactly the whole still's counts: the decision and the frames do not change. A window over 6 megapixels is judged on every n-th pixel instead; the report records `reference_size`, `reference_window` and `reference_stride`. Background-key detection now reads an image a band of rows at a time. On synthetic padded canvases the judgment peaks at 0.42 to 0.56 GiB from 8 to 39 megapixels, and a synthetic 1080p clip judged against a 39-megapixel canvas runs `video-frames --decontam palette` in 1.1 GiB.
