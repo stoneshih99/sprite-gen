@@ -134,3 +134,52 @@ def test_strip_panel_lines_is_a_no_op_without_lines() -> None:
     strip.alpha_composite(_figure(120, 50, weapon_reach=40), (0, 0))
     cleaned, erased = strip_panel_lines(strip, 1)
     assert erased == 0 and cleaned.tobytes() == strip.tobytes()
+
+
+def _cells_height(cells: list[Image.Image]) -> list[int]:
+    heights = []
+    for cell in cells:
+        bbox = cell.getbbox()
+        heights.append(bbox[3] - bbox[1] if bbox else 0)
+    return heights
+
+
+def test_body_height_shares_one_scale_across_rows() -> None:
+    """Rows are generated separately, so the same character can be drawn at any size.
+    With fit.body_height every row lands at the same standing height, instead of each
+    row's median pose filling the cell."""
+    small = [_figure(120, 50), _figure(120, 50)]
+    big = [image.resize((image.width * 2, image.height * 2), Image.Resampling.NEAREST) for image in small]
+    fit = {**TORSO_ROW, "body_height": 40}
+    assert _cells_height(fit_row_to_cells(small, 96, 96, 8, 8, fit)) == [40, 40]
+    assert _cells_height(fit_row_to_cells(big, 96, 96, 8, 8, fit)) == [40, 40]
+    # without it each row fills the safe height (80)
+    assert _cells_height(fit_row_to_cells(small, 96, 96, 8, 8, TORSO_ROW)) == [60, 60]
+
+
+def test_pose_height_shrinks_a_kneeling_row() -> None:
+    kneel = [_figure(120, 50), _figure(120, 50)]
+    fit = {**TORSO_ROW, "body_height": 40, "pose_height": 0.5}
+    assert _cells_height(fit_row_to_cells(kneel, 96, 96, 8, 8, fit)) == [20, 20]
+
+
+def test_state_fit_picks_the_row_ratio() -> None:
+    from sprite_gen.frames.extract import state_fit
+
+    fit = {"body_height": 150, "pose_heights": {"lose": 0.7}}
+    assert state_fit(fit, "lose") == {"body_height": 150, "pose_height": 0.7}
+    assert state_fit(fit, "idle") == {"body_height": 150}
+    assert row_fit_enabled({"body_height": 150})
+
+
+def test_solid_height_ignores_a_raised_weapon() -> None:
+    from sprite_gen.frames.extract import solid_height
+
+    body = _figure(120, 50)
+    raised = Image.new("RGBA", (120, 104), (0, 0, 0, 0))
+    raised.alpha_composite(body, (0, 40))
+    for y in range(0, 44):  # a 2px staff held straight up, 40px above the head
+        for x in range(56, 58):
+            raised.putpixel((x, y), WEAPON)
+    assert abs(solid_height(body.crop(body.getbbox())) - 60) <= 2
+    assert abs(solid_height(raised.crop(raised.getbbox())) - 60) <= 2

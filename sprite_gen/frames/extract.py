@@ -1277,6 +1277,8 @@ def fit_to_cell(
     #             ignores soft-matte fringe (α ≤ 10), and in the pixel unfake
     #             row path it is applied per frame instead of the row union
     #   align_y:  "bottom" (default) | "center" — bottom pins feet to a shared baseline
+    #   body_height / pose_heights: row fit only — one standing height (px) for every
+    #             row, each row's median pose at body_height x pose_heights[state]
     # 2026-07-04 (maintainer): 기본값을 foot-centroid/bottom 으로 승격 — 프레임 간
     # "무게감"(발밑 기준선)이 기본으로 잡혀야 한다. pixel_unfake 경로와 동일 기본.
     fit = fit or {}
@@ -1343,7 +1345,48 @@ ROW_FIT_EDGE_PAD = 2  # px kept clear at the left/right cell edges
 
 def row_fit_enabled(fit: dict[str, Any] | None) -> bool:
     fit = fit or {}
-    return bool(fit.get("row_scale")) or str(fit.get("align_x", "")).lower() == "torso"
+    return bool(fit.get("row_scale")) or bool(fit.get("body_height")) or str(fit.get("align_x", "")).lower() == "torso"
+
+
+def state_fit(fit: dict[str, Any] | None, state: str) -> dict[str, Any]:
+    """The fit one state row is extracted with: `fit.pose_heights[state]` becomes that
+    row's `pose_height` (fraction of the standing `body_height` its median pose is
+    fitted to). Without body_height the ratio has nothing to scale and is ignored."""
+    fit = dict(fit or {})
+    heights = fit.pop("pose_heights", None) or {}
+    if state in heights:
+        fit["pose_height"] = float(heights[state])
+    return fit
+
+
+SOLID_OPEN_FRACTION = 0.04  # opening kernel, as a fraction of the sprite height
+
+
+def _shift_min_max(mask: np.ndarray, size: int, axis: int, use_min: bool) -> np.ndarray:
+    """1-D erosion (min) or dilation (max) of a boolean mask with a centered window."""
+    if size <= 1:
+        return mask
+    pad = size // 2
+    padded = np.pad(mask, [(pad, size - 1 - pad) if a == axis else (0, 0) for a in range(mask.ndim)], constant_values=False)
+    out = padded.take(range(0, mask.shape[axis]), axis=axis).copy()
+    for offset in range(1, size):
+        window = padded.take(range(offset, offset + mask.shape[axis]), axis=axis)
+        out = (out & window) if use_min else (out | window)
+    return out
+
+
+def solid_height(sprite: Image.Image) -> int:
+    """Height of the sprite's solid body: the alpha mask after a morphological opening
+    that removes parts thinner than ~4 % of its height — a staff raised overhead, a
+    sword, a ribbon — which otherwise make a pose read taller than the body is."""
+    opaque = np.asarray(sprite.getchannel("A")) >= 128
+    size = max(3, round(SOLID_OPEN_FRACTION * opaque.shape[0]))
+    eroded = _shift_min_max(_shift_min_max(opaque, size, 0, True), size, 1, True)
+    opened = _shift_min_max(_shift_min_max(eroded, size, 0, False), size, 1, False)
+    rows = np.flatnonzero(opened.any(axis=1))
+    if rows.size == 0:
+        return sprite.height
+    return int(rows[-1] - rows[0] + 1)
 
 
 def _torso_anchor_x(sprite: Image.Image, body_height: float) -> float:
@@ -1412,7 +1455,16 @@ def fit_row_to_cells(
 
     body_height = median(sprite.height for sprite in present)
     half_width = max(1.0, cell_width / 2.0 - ROW_FIT_EDGE_PAD)
-    typical = min(max(1, cell_height - safe_margin_y * 2) / body_height, 1.0)
+    # fit.body_height: one standing body height (px) shared by every row of the
+    # character, times the row's pose_height (a kneel ~0.7, lying ~0.4). Without it
+    # each row's median pose fills the safe height, so a kneeling row is drawn as
+    # tall as the standing one and the character grows whenever it kneels.
+    if fit.get("body_height"):
+        # measured on the solid body, so a raised weapon does not shrink the pose
+        solid = median(solid_height(sprite) for sprite in present)
+        typical = min(float(fit["body_height"]) * float(fit.get("pose_height", 1.0)) / solid, 1.0)
+    else:
+        typical = min(max(1, cell_height - safe_margin_y * 2) / body_height, 1.0)
     if align_y == "bottom":
         height_limit = max(1, cell_height - safe_margin_y - ROW_FIT_EDGE_PAD)
     else:
@@ -3599,13 +3651,14 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
                 strip, erased = strip_panel_lines(strip, frame_count)
                 if erased:
                     all_warnings.append(f"{state}: erased {erased} panel-line pixel(s)")
-            frames = extract_component_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config)
+            row_fit = state_fit(fit_config, state)
+            frames = extract_component_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, row_fit)
             method = "components"
             if frames is None:
                 if not args.allow_slot_fallback:
                     all_errors.append(f"{state}: could not extract {frame_count} sprite components")
                     continue
-                frames = extract_slot_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config)
+                frames = extract_slot_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, row_fit)
                 method = "slots-explicit"
             finalize_state(state, frames, frame_count, method)
             continue
