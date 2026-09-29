@@ -479,6 +479,10 @@ REQUEST_KEYS_CARRIED = ("cell", "states", "style",
 # note names it separately: `character` comes from --character-id/--description/
 # --base-image, `chroma_key` from --chroma-key + the base image.
 REQUEST_KEYS_REGENERATED = ("version", "kind", "engine", "character", "chroma_key", "layout")
+# Read into the regenerated `character` rather than carried as-is: a top-level
+# `description` is the character description when --description is not given, so a
+# request built by a game's own tooling does not lose the look it asked for.
+REQUEST_KEYS_CONSUMED = ("description",)
 STATE_KEYS_CARRIED = ("frames", "fps", "loop", "action", "track", "gait")
 
 
@@ -490,7 +494,8 @@ def dropped_key_notes(raw_request: dict[str, Any]) -> list[str]:
     exactly like a key that was honoured.
     """
     notes: list[str] = []
-    dropped = sorted(set(raw_request) - set(REQUEST_KEYS_CARRIED) - set(REQUEST_KEYS_REGENERATED))
+    dropped = sorted(set(raw_request) - set(REQUEST_KEYS_CARRIED) - set(REQUEST_KEYS_REGENERATED)
+                     - set(REQUEST_KEYS_CONSUMED))
     if dropped:
         notes.append(
             f"dropped top-level request key(s) {dropped}: prepare re-emits "
@@ -1001,7 +1006,7 @@ def _run(args: argparse.Namespace):
         "engine": "component-row",
         "character": {
             "id": args.character_id,
-            "description": args.description,
+            "description": args.description or str(raw_request.get("description") or ""),
             "base_image": base_dest.name if base_dest else None,
         },
         "cell": cell,
