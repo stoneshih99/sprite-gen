@@ -36,3 +36,19 @@ def test_request_description_reaches_the_character(tmp_path: Path, cli_descripti
     character = json.loads((tmp_path / "run/sprite-request.json").read_text())["character"]
     assert character["description"] == expected
     assert f"Character: {expected}." in (tmp_path / "run/prompts/walk.txt").read_text()
+
+
+def test_re_prepare_accepts_the_runs_own_base_image(tmp_path: Path):
+    # `prepare --force --base-image <run>/base-source.png` refreshes guides and prompts in place
+    from PIL import Image
+    base = tmp_path / "base.png"
+    Image.new("RGBA", (64, 96), (40, 80, 160, 255)).save(base)
+    run = tmp_path / "run"
+    first = [sys.executable, "-m", "sprite_gen.cli", "prepare", "--out-dir", str(run), "--character-id", "walker",
+             "--base-image", str(base)]
+    assert subprocess.run(first, text=True, capture_output=True).returncode == 0
+    again = [sys.executable, "-m", "sprite_gen.cli", "prepare", "--out-dir", str(run), "--character-id", "walker",
+             "--base-image", str(run / "base-source.png"), "--force"]
+    result = subprocess.run(again, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert (run / "base-source.png").read_bytes() == base.read_bytes()
