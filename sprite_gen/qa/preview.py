@@ -128,6 +128,10 @@ def _run_guarded(args, run_dir):
             if args.delay_ticks
             else max(1, round(1000 / fps))
         )
+        # 보행 리타이밍 행은 추출이 잰 프레임별 시간으로 재생해야 검수가 게임과 같다
+        gait_durations = (row.get("gait") or {}).get("durations_ms")
+        if gait_durations and not args.delay_ticks and len(gait_durations) == len(frames):
+            duration = [max(1, round(value)) for value in gait_durations]
         save_clean_gif(
             frames,
             qa_dir / f"{state}.gif",
@@ -140,7 +144,7 @@ def _run_guarded(args, run_dir):
                 "ok": True,
                 "frames": len(frames),
                 "fps": fps,
-                "delay_ticks": round(duration / 10),
+                "delay_ticks": [round(value / 10) for value in duration] if isinstance(duration, list) else round(duration / 10),
                 "loop": loop,
             }
         )

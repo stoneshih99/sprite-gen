@@ -48,19 +48,23 @@ def save_clean_gif(
     frames: Iterable[Image.Image],
     output_path: Path,
     *,
-    duration_ms: int,
+    duration_ms: int | list[int],
     loop: int = 0,
     alpha_threshold: int = 8,
 ) -> None:
     """Save RGBA frames as a clean transparent GIF.
 
-    `loop=0` means infinite loop in GIF/Pillow terminology.
+    `loop=0` means infinite loop in GIF/Pillow terminology. `duration_ms` is one
+    delay for every frame or one per frame (a retimed gait row).
     """
-    if duration_ms <= 0:
+    delays = list(duration_ms) if isinstance(duration_ms, (list, tuple)) else [duration_ms]
+    if not delays or any(delay <= 0 for delay in delays):
         raise ValueError("duration_ms must be positive")
     prepared = [_prepare_transparent_frame(frame, alpha_threshold) for frame in frames]
     if not prepared:
         raise ValueError("at least one frame is required")
+    if len(delays) > 1 and len(delays) != len(prepared):
+        raise ValueError("per-frame duration_ms needs one delay per frame")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prepared[0].save(
         output_path,

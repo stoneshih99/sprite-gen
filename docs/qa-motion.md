@@ -19,7 +19,7 @@ The GIF is exported through the clean transparent GIF path (dedicated transparen
 ## 판정 기준
 
 - **Cyclic locomotion (walk / run):** the motion must read as continuous locomotion, not static bobbing. Review body rhythm, limb motion, foot contact stability, and whether the loop communicates the requested direction and speed.
-- **Foot slide (automated when declared):** a walk/run row that declares `gait` is measured at extraction and fails when the planted feet do not move back as far as the game moves the sprite ([states-and-frames](states-and-frames.md#ground-contact-gait)). Passing that check is necessary, not sufficient: still watch the loop.
+- **Foot slide (automated when declared):** a walk/run row that declares `gait` is tracked at extraction: it fails when the legs do not carry the body as far as the game moves it, and otherwise each frame is timed so the planted foot moves at the game's speed ([states-and-frames](states-and-frames.md#ground-contact-gait)). `qa/<state>.gif` plays that timing. Passing is necessary, not sufficient: still watch the loop.
 - **Experimental locomotion boundary:** walk/run/frontwalk/45-frontwalk are not simple default pass states. They may be generated, but the report must call them experimental unless motion continuity passes cleanly.
 - **Loop seam:** for `loop: true` states, the last frame must flow back into the first. A visible jump at the wrap is a fail.
 - **Non-loop gestures:** for `loop: false` states such as attack, jump, hurt, or wave, judge start/middle/end readability instead of loop seam. Do not force a non-loop gesture into a loop just because it has multiple frames.
