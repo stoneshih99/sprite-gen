@@ -95,6 +95,18 @@ def _run(args: argparse.Namespace):
         state: state_plan(curation, state, state_frame_total(request, state))
         for state in states
     }
+    # 보행 리타이밍 (sprite_gen/spec/gait.py): 추출이 잰 프레임별 시간을 **프레임 복제**로
+    # 굽는다 — 프레임별 지속시간은 복제가 담당한다는 계약 그대로, durations_ms 는 등간격.
+    # 사람이 큐레이션한 행은 순서·타이밍을 사람이 소유하므로 건드리지 않는다.
+    retimed_fps: dict[str, int] = {}
+    for state in states:
+        gait_row = (rows_by_state.get(state) or {}).get("gait") or {}
+        ticks = gait_row.get("ticks")
+        curated = isinstance(((curation or {}).get("states") or {}).get(state), dict)
+        if ticks and not curated and plans[state][0] == list(range(len(ticks))):
+            ordered, transforms = plans[state]
+            plans[state] = ([index for index in ordered for _ in range(int(ticks[index]))], transforms)
+            retimed_fps[state] = int(gait_row["tick_fps"])
     # 'plain' = pre-unfake twin (curator toggle off). Resolved per state
     # (per-row curator toggle > run-wide default). Fail loud when the twin is
     # missing — a plain bake must never silently fall back to pixel.
@@ -216,11 +228,12 @@ def _run(args: argparse.Namespace):
         # durations_ms: 프레임별 표시 시간 계약 (지금은 fps 등간격 — 프레임별 편집
         # UI 가 생기면 여기만 비등간격으로 채워진다). 소비자는 이 배열이 있으면
         # fps 대신 이것을 따른다.
-        duration_ms = max(1, round(1000.0 / (float(entry.get("fps", 6)) or 6.0)))
+        row_fps = retimed_fps.get(state, entry.get("fps", 6))
+        duration_ms = max(1, round(1000.0 / (float(row_fps) or 6.0)))
         animation["rows"][state] = {
             "row": row_index,
             "frames": len(positions),
-            "fps": int(entry.get("fps", 6)),
+            "fps": int(row_fps),
             # 프레임별 지속시간은 프레임 복제가 담당한다 (maintainer 확정 2026-07-18 —
             # 복제는 아틀라스 셀 공유라 부하 0; per-frame duration 이중 진실 금지).
             # 전체 속도는 state fps 하나로 조정한다.
@@ -228,6 +241,10 @@ def _run(args: argparse.Namespace):
             "loop": bool(entry.get("loop", True)),
             "frame_variant": variant,
         }
+        if state in retimed_fps:
+            # 관측용: 원본 프레임별 시간과 복제 횟수 (소비자는 frame_layout + fps 만 읽으면 된다)
+            gait_row = rows_by_state[state]["gait"]
+            animation["rows"][state]["gait"] = {key: gait_row[key] for key in ("durations_ms", "ticks", "tick_fps", "per_frame")}
         if breathe_cfg:
             # 자가 복구가 돌았는지, 프레임마다 경계가 달라졌는지 관측 (원칙 6).
             animation["rows"][state]["breathe"] = anatomy_report(row_source_frames, breathe_cfg) \

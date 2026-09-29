@@ -29,7 +29,7 @@ def test_declared_gait_is_carried_marked_and_prompted(tmp_path: Path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "dropped states.walk" not in result.stderr
     emitted = json.loads((tmp_path / "run/sprite-request.json").read_text())
-    assert emitted["states"]["walk"]["gait"] == {"ground_travel": 120.0, "steps": 2, "tolerance": 0.25}
+    assert emitted["states"]["walk"]["gait"] == {"ground_travel": 120.0, "steps": 2, "tolerance": 0.25, "min_frame_ms": 40.0}
     assert FOOT_RGB in _colours(tmp_path / "run/references/layout-guides/walk.png")
     prompt = (tmp_path / "run/prompts/walk.txt").read_text()
     assert "Ground contact" in prompt

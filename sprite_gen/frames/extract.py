@@ -3410,14 +3410,15 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
                 orig_paths.append(f"{rel_dir}/orig/frame-{index}.png")
 
         errors, warnings, frame_records = inspect_frames(frames, chroma_key, args)
-        # 선언된 보행(gait)만 보폭을 잰다 — 디딘 발이 게임 이동 거리만큼 뒤로 가지 않으면 미끄러진다
+        # 선언된 보행(gait)만 잰다 — 디딘 발을 추적해 보폭을 검사하고, 프레임마다 발이 움직인 만큼 표시 시간을 준다
         gait = (request["states"].get(state) or {}).get("gait")
         gait_result = None
         if gait:
             gait = normalize_gait(state, gait, frame_count)
-            gait_result = measure_gait(frames[:frame_count], gait)
+            fps = float((request["states"].get(state) or {}).get("fps") or 6)
+            gait_result = measure_gait(frames[:frame_count], gait, fps)
             if not gait_result["ok"]:
-                errors.append(gait_error(gait_result, gait["tolerance"]))
+                errors.append(gait_error(gait_result))
         all_errors.extend(f"{state}: {error}" for error in errors)
         all_warnings.extend(f"{state}: {warning}" for warning in warnings)
         row = {
@@ -3878,7 +3879,9 @@ def engine_revision() -> str:
     # module file, not as a sibling of __file__.
     import sprite_gen.spec.layout as _layout_module
     import sprite_gen.frames.decontam as _decontam_module
-    sources = (Path(__file__), Path(_layout_module.__file__), Path(_decontam_module.__file__))
+    import sprite_gen.spec.gait as _gait_module
+    sources = (Path(__file__), Path(_layout_module.__file__), Path(_decontam_module.__file__),
+               Path(_gait_module.__file__))
     key = tuple(source.stat().st_mtime_ns for source in sources)
     if _ENGINE_REVISION is None or _ENGINE_REVISION_KEY != key:
         digest = hashlib.sha256()

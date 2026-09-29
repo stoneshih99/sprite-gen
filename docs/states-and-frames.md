@@ -70,25 +70,30 @@ If a user asks for 9 or 12 frames, run it as an explicit experiment and report `
 
 ## Ground-Contact Gait
 
-A walk or run row is drawn in place: the body stays on the slot centre and the game moves the sprite. The feet only read as gripping the ground when the planted foot slides backward, relative to the body, by exactly the distance the game moves the sprite in that time. Image models get leg alternation right far more often than that spacing — a row can alternate cleanly and still skate, the planted foot creeping 5 px in one frame and jumping 40 px into the next contact.
+A walk or run row is drawn in place: the body stays on the slot centre and the game moves the sprite. The feet only read as gripping the ground when the planted foot slides backward, relative to the body, by exactly the distance the game moves the sprite in that time. Image models get leg alternation right far more often than that spacing — a row can alternate cleanly and still skate, the planted foot creeping 5 px in one frame and jumping 44 px into the next contact. Guide marks alone do not fix it: fumo regenerated three walk rows against them twice and the spacing stayed as uneven.
 
-Declare the travel on the state so generation and extraction both hold the row to it:
+Declare the travel on the state:
 
 ```json
 "walk": { "frames": 6, "fps": 13, "loop": true, "action": "...",
-          "gait": { "ground_travel": 118, "steps": 2, "tolerance": 0.25 } }
+          "gait": { "ground_travel": 118, "steps": 2, "tolerance": 0.25, "min_frame_ms": 40 } }
 ```
 
-- `ground_travel` (required): final cell pixels the sprite moves in the game during one loop, i.e. speed × pixels-per-unit × frames ÷ fps.
+- `ground_travel` (required): final cell pixels the sprite moves in the game during one loop at the state's `fps`, i.e. speed × pixels-per-unit × frames ÷ fps.
 - `steps`: foot contacts per loop, `2` for a biped. `frames` must be a multiple of it. Default `2`.
-- `tolerance`: allowed relative error of the measured travel. Default `0.25`.
+- `tolerance`: allowed relative error of the tracked travel. Default `0.25`.
+- `min_frame_ms`: shortest time a frame stays up after retiming. Default `40`.
 
 What it changes:
 
-- **Prepare** draws a ground line on the guide's bottom safe edge and one orange mark per slot: filled where the planted sole touches down, hollow for the trailing sole on contact frames. A step is `ground_travel / steps` long; the leading foot lands half a step ahead of the slot centre and the mark moves back `ground_travel / frames` every frame. The row prompt tells the model to put the planted foot on its mark and never to draw the marks.
-- **Extract** measures the row after fit: the opaque runs in the lowest 4 px of the loop are the soles, each is matched to the nearest sole behind it in the next frame (the loop wraps), and the per-frame moves add up to the measured travel. A match further back than 1.5 frames of travel is the other foot and does not count, so a planted foot that jumps into a contact frame measures short even when the loop total adds up. Outside the tolerance the row fails with a `<state>: gait: …` error and is not published; the manifest row records `gait` (`measured_travel`, `ratio`, `per_frame`) either way.
+- **Prepare** draws a ground line on the guide's bottom safe edge and one orange mark per slot: filled where the planted sole touches down, hollow for the trailing sole on contact frames (frames 0, frames/steps, …). The leading foot lands half a step ahead of the slot centre and the mark moves back `ground_travel / frames` every frame. The row prompt tells the model to put the planted foot on its mark and never to draw the marks.
+- **Extract** tracks the planted foot after fit. The soles are the opaque runs in the lowest 4 px of the loop. On a contact frame the planted foot is the front sole; after it, the nearest sole behind (or, when none is, just ahead); into the next contact it is the rear sole. The row fails with `<state>: gait: …` and is not published when the tracked loop is off `ground_travel` by more than the tolerance, when a planted foot moves forward more than 3 px, or when one frame covers more than 85 % of a step (that is the other foot: legs that never trade places). Otherwise each frame gets (its travel ÷ game speed), at least `min_frame_ms`, as whole ticks of 50 fps. The manifest row records `gait` (`per_frame`, `durations_ms`, `ticks`, `tick_fps`, `measured_travel`, `ratio`, `problems`).
+- **Compose-atlas** plays that timing by frame duplication, the contract for per-frame timing: an uncurated gait row repeats frame *i* `ticks[i]` times at `fps` 50. Cells are shared, so the atlas does not grow and `durations_ms` stays uniform; `animation.rows.<state>.gait` records the source timing. A curated row keeps the human order and timing.
+- **Preview** (`preview_animation.py`) plays `qa/<state>.gif` with the measured per-frame durations, so review matches the game.
 
-Rows without `gait` keep the geometry-only guide and are never measured. Implementation: `sprite_gen/spec/gait.py`.
+On fumo's walk rows (13 fps, 118 px): old rows whose legs never traded places fail (0.52x; a foot moving forward; a 70 px "step"), and the regenerated rows pass with frame times from 40 to 172 ms.
+
+Rows without `gait` keep the geometry-only guide and are never measured or retimed. Implementation: `sprite_gen/spec/gait.py`.
 
 ## Related
 

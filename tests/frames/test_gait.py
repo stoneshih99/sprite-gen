@@ -38,7 +38,8 @@ def _even_walk() -> list[Image.Image]:
 
 
 def test_normalize_fills_defaults_and_rejects_bad_contracts() -> None:
-    assert normalize_gait("walk", {"ground_travel": 120}, 6) == {"ground_travel": 120.0, "steps": 2, "tolerance": 0.25}
+    assert normalize_gait("walk", {"ground_travel": 120}, 6) == {
+        "ground_travel": 120.0, "steps": 2, "tolerance": 0.25, "min_frame_ms": 40.0}
     with pytest.raises(SystemExit, match="unknown key"):
         normalize_gait("walk", {"ground_travel": 120, "speed": 4}, 6)
     with pytest.raises(SystemExit, match="must divide"):
@@ -53,25 +54,51 @@ def test_marks_step_back_evenly_and_hand_over_at_contact() -> None:
     assert marks == [(30.0, -30.0), (10.0, None), (-10.0, None), (30.0, -30.0), (10.0, None), (-10.0, None)]
 
 
-def test_even_walk_grips_the_ground() -> None:
-    result = measure_gait(_even_walk(), GAIT)
-    assert result["measured_travel"] == TRAVEL
+def _walk(stance: list) -> list[Image.Image]:
+    """Each foot follows ``stance`` (sole x per frame, None = lifted); the feet are half a loop apart."""
+    return [_walker([stance[i], stance[(i + 3) % 6]]) for i in range(6)]
+
+
+def _even_walk() -> list[Image.Image]:
+    return _walk([158, 138, 118, 98, None, None])
+
+
+def test_even_walk_keeps_even_timing() -> None:
+    # 120 px per loop at 12 fps = 240 px/s: 20 px takes 83 ms, about 4 ticks of 50 fps
+    result = measure_gait(_even_walk(), GAIT, 12)
+    assert result["ok"], result["problems"]
     assert result["per_frame"] == [20.0] * 6
-    assert result["ok"]
+    assert result["durations_ms"] == [83] * 6
+    assert result["ticks"] == [4] * 6 and result["tick_fps"] == 50
 
 
-def test_planted_feet_that_never_move_slide() -> None:
-    result = measure_gait([_walker([98, 158])] * 6, GAIT)
-    assert result["measured_travel"] == 0
+def test_uneven_steps_are_timed_to_the_game_speed() -> None:
+    # The planted foot creeps 8 px twice, then moves 44 px into the contact frame: the right total,
+    # unevenly spaced. The long move stays up longest; the short ones are held to min_frame_ms.
+    result = measure_gait(_walk([158, 150, 142, 98, None, None]), GAIT, 12)
+    assert result["ok"], result["problems"]
+    assert result["per_frame"] == [8.0, 8.0, 44.0, 8.0, 8.0, 44.0]
+    assert result["durations_ms"] == [40, 40, 183, 40, 40, 183]
+    assert result["ticks"] == [2, 2, 9, 2, 2, 9]
+
+
+def test_feet_that_never_trade_places_fail() -> None:
+    # Both soles stay put: the only "travel" is jumping from the front foot to the rear one
+    result = measure_gait([_walker([98, 158])] * 6, GAIT, 12)
     assert not result["ok"]
+    assert any("other foot" in problem for problem in result["problems"])
 
 
-def test_a_jump_at_the_contact_frame_is_a_slide_even_when_the_total_adds_up() -> None:
-    # The planted foot creeps 8 px twice, then jumps 44 px into the contact frame: 60 px per step in total
-    stance = [158, 150, 142, 98, None, None]
-    frames = [_walker([stance[i], stance[(i + 3) % 6]]) for i in range(6)]
-    result = measure_gait(frames, GAIT)
-    assert result["per_frame"] == [8.0, 8.0, 0.0, 8.0, 8.0, 0.0]
+def test_a_planted_foot_moving_forward_fails() -> None:
+    result = measure_gait(_walk([138, 150, 118, 98, None, None]), GAIT, 12)
+    assert not result["ok"]
+    assert any("moves forward" in problem for problem in result["problems"])
+
+
+def test_legs_that_carry_the_body_too_little_fail() -> None:
+    # The even walk covers 120 px per loop; a game moving 240 px would drag the feet along
+    result = measure_gait(_even_walk(), {**GAIT, "ground_travel": 240.0}, 12)
+    assert result["ratio"] == 0.5
     assert not result["ok"]
 
 
@@ -106,19 +133,35 @@ def _extract(run_dir: Path) -> tuple[int, dict]:
     raise AssertionError(result.stdout + result.stderr)
 
 
-def test_extract_fails_a_declared_row_whose_feet_slide(tmp_path: Path) -> None:
+def test_extract_fails_a_declared_row_that_shuffles(tmp_path: Path) -> None:
     code, manifest = _extract(_walk_run(tmp_path / "run", [_walker([98, 158])] * 6, {"ground_travel": TRAVEL}))
     assert code != 0
     assert any(error.startswith("walk: gait:") for error in manifest["errors"])
 
 
-def test_extract_records_the_measurement_on_a_passing_row(tmp_path: Path) -> None:
-    # Extraction may rescale the row, so only the wiring is asserted here: a generous tolerance passes
-    code, manifest = _extract(_walk_run(tmp_path / "run", _even_walk(), {"ground_travel": TRAVEL, "tolerance": 0.9}))
+def test_extract_times_and_compose_repeats_a_passing_row(tmp_path: Path) -> None:
+    uneven = _walk([158, 150, 142, 98, None, None])
+    run_dir = _walk_run(tmp_path / "run", uneven, {"ground_travel": TRAVEL, "tolerance": 0.5})
+    code, manifest = _extract(run_dir)
     assert code == 0, manifest.get("errors")
-    row = next(row for row in manifest["rows"] if row["state"] == "walk")
-    assert row["gait"]["measured_travel"] > 0
-    assert row["gait"]["ok"]
+    gait = next(row for row in manifest["rows"] if row["state"] == "walk")["gait"]
+    assert gait["ok"] and len(gait["ticks"]) == 6
+    assert gait["ticks"][2] > gait["ticks"][0], "the long move stays up longer"
+
+    result = run_script("compose_sprite_atlas.py", "--run-dir", str(run_dir))
+    assert result.returncode == 0, result.stdout + result.stderr
+    atlas = json.loads((run_dir / "sprite-sheet-alpha.report.json").read_text())
+    rects = atlas["frame_layout"]["rows"]["walk"]
+    animation = json.loads(json.dumps(atlas.get("animation") or {}))
+    if not animation:
+        animation = json.loads((run_dir / "manifest.json").read_text())["animation"]
+    walk = animation["rows"]["walk"]
+    # Timing is frame duplication at the tick rate: uniform durations, shared cells, no new atlas columns
+    assert walk["fps"] == gait["tick_fps"]
+    assert len(rects) == walk["frames"] == sum(gait["ticks"])
+    assert len({(r["x"], r["y"]) for r in rects}) == 6
+    assert len(set(walk["durations_ms"])) == 1
+    assert walk["gait"]["ticks"] == gait["ticks"]
 
 
 def test_undeclared_rows_are_never_measured(tmp_path: Path) -> None:
