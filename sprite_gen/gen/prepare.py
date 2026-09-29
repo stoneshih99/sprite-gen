@@ -997,7 +997,9 @@ def _run(args: argparse.Namespace):
         if not base_source.is_file():
             raise SystemExit(f"missing base image: {base_source}")
         base_dest = out_dir / f"base-source{base_source.suffix.lower() or '.png'}"
-        shutil.copy2(base_source, base_dest)
+        # Re-preparing a run (--force) against its own base-source is a no-op copy, not an error
+        if not (base_dest.exists() and base_dest.resolve() == base_source):
+            shutil.copy2(base_source, base_dest)
 
     chroma_key = choose_chroma_key(base_dest, args.chroma_key)
     request = {
