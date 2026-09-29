@@ -858,9 +858,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--safe-margin", type=int, default=None, help="absolute px override; default is 9.4%% of the cell dimension, floored")
     parser.add_argument("--chroma-key", default="auto", help="auto or #RRGGBB")
     parser.add_argument("--fit-resample", choices=["lanczos", "nearest", "kcentroid"], default=None, help="frame downscale filter; nearest keeps pixel-art edges crisp, kcentroid keeps 1px outlines readable")
-    parser.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid"], default=None, help="horizontal frame anchor; centroid stabilizes body position across variable-width poses, foot-centroid anchors on the bottom-20%% alpha (legs), alpha-centroid is the perfectpixel-studio per-frame alpha-weighted centroid (fringe-insensitive, per-frame in the pixel unfake row path)")
+    parser.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid", "torso"], default=None, help="horizontal frame anchor; centroid stabilizes body position across variable-width poses, foot-centroid anchors on the bottom-20%% alpha (legs), alpha-centroid is the perfectpixel-studio per-frame alpha-weighted centroid (fringe-insensitive, per-frame in the pixel unfake row path), torso anchors the row on the torso band so reaching limbs and weapons do not shift the body")
     parser.add_argument("--fit-align-y", choices=["center", "bottom"], default=None, help="vertical frame anchor; bottom pins feet to a shared baseline, center pins content to the cell center")
     parser.add_argument("--fit-ground-frames", action=argparse.BooleanOptionalAction, default=None, help="re-anchor each frame to the shared vertical line; disable to preserve deliberate vertical travel")
+    parser.add_argument("--fit-row-scale", action=argparse.BooleanOptionalAction, default=None, help="one scale per row, so reaching poses shrink the row instead of pulsing or clipping")
+    parser.add_argument("--fit-strip-panel-lines", action=argparse.BooleanOptionalAction, default=None, help="erase long thin panel borders the image model draws around poses")
     parser.add_argument("--fit-pixel-unfake", action=argparse.BooleanOptionalAction, default=None, help="unfake the AI dots: pitch detection -> grid snap -> kCentroid -> shared palette -> integer NEAREST (see docs/pixel-unfake.md)")
     # 은퇴한 이름 (조용한 별칭 금지 — 두 이름이 공존하면 문서·스크립트가 갈라진다)
     parser.add_argument("--fit-pixel-perfect", "--no-fit-pixel-perfect", dest="_retired_pp",
@@ -980,8 +982,8 @@ def _run(args: argparse.Namespace):
         "align_x": args.fit_align_x,
         "align_y": args.fit_align_y,
         "ground_frames": args.fit_ground_frames,
-        "row_scale": getattr(args, "fit_row_scale", None),
-        "strip_panel_lines": getattr(args, "fit_strip_panel_lines", None),
+        "row_scale": args.fit_row_scale,
+        "strip_panel_lines": args.fit_strip_panel_lines,
         "pixel_unfake": args.fit_pixel_unfake,
         "logical_height": args.fit_logical_height,
         "palette_size": args.fit_palette_size,
