@@ -222,35 +222,52 @@ def _bake_variant_exact(
     return out, records, covered
 
 
+def _match_tolerance(arr: np.ndarray, opaque: np.ndarray, sources: list[tuple[int, int, int]], tolerance: int) -> np.ndarray:
+    """Index of the source each opaque pixel is recoloured from, or -1.
+
+    A pixel matches when it is within Chebyshev ``tolerance`` of a source; the
+    nearest source (L2) wins, ties broken by map order. The match depends only on
+    a pixel's colour, so it is solved once per distinct colour (a sheet has far
+    fewer distinct colours than pixels) and scattered back — identical to testing
+    every pixel against every source, without one full-image pass per source.
+    """
+    best_idx = np.full(arr.shape[:2], -1, dtype=np.int32)
+    if not sources or not opaque.any():
+        return best_idx
+    colours, inverse = np.unique(_packed_rgb(arr)[opaque], return_inverse=True)
+    rgb = np.stack(((colours >> 16) & 255, (colours >> 8) & 255, colours & 255), axis=1).astype(np.int32)
+    src = np.array(sources, dtype=np.int32)
+    no_match = np.iinfo(np.int32).max
+    chosen = np.empty(len(rgb), dtype=np.int32)
+    chunk = max(1, 4_000_000 // (len(src) * 3))
+    for start in range(0, len(rgb), chunk):
+        delta = np.abs(rgb[start:start + chunk, None, :] - src[None, :, :])
+        l2 = np.where(delta.max(axis=2) <= tolerance, (delta * delta).sum(axis=2), no_match)
+        # argmin returns the first minimum: the earlier map entry wins a tie
+        index = l2.argmin(axis=1).astype(np.int32)
+        chosen[start:start + chunk] = np.where(l2[np.arange(len(index)), index] == no_match, -1, index)
+    best_idx[opaque] = chosen[inverse.reshape(-1)]
+    return best_idx
+
+
 def _bake_variant_tolerance(
-    arr: np.ndarray, opaque: np.ndarray, pairs, tolerance: int
+    arr: np.ndarray, opaque: np.ndarray, pairs, tolerance: int, best_idx: np.ndarray | None = None
 ) -> tuple[np.ndarray, list[dict], np.ndarray]:
     """Tolerance bake: an opaque pixel within Chebyshev ``tolerance`` of a
     source is recoloured to that source's target; nearest source (L2) wins,
-    ties broken by map order. Deterministic — pure integer arithmetic."""
-    rgb = arr[:, :, :3].astype(np.int32)
+    ties broken by map order. Deterministic — pure integer arithmetic.
+    ``best_idx`` is the precomputed match (variants that share their sources
+    share it)."""
+    if best_idx is None:
+        best_idx = _match_tolerance(arr, opaque, [src for src, _tgt in pairs], tolerance)
     out = arr.copy()
-    best_dist = np.full(arr.shape[:2], np.iinfo(np.int32).max, dtype=np.int32)
-    best_idx = np.full(arr.shape[:2], -1, dtype=np.int32)
-    for idx, (src, _tgt) in enumerate(pairs):
-        delta = np.abs(rgb - np.array(src, dtype=np.int32))
-        cheb = delta.max(axis=2)
-        l2 = (delta * delta).sum(axis=2)
-        within = opaque & (cheb <= tolerance)
-        # Strict-less keeps the earlier map entry on a tie (stable, deterministic).
-        take = within & (l2 < best_dist)
-        best_dist = np.where(take, l2, best_dist)
-        best_idx = np.where(take, idx, best_idx)
     covered = best_idx >= 0
-    records = []
-    for idx, (src, tgt) in enumerate(pairs):
-        mask = best_idx == idx
-        hits = int(mask.sum())
-        if hits:
-            out[mask, 0] = tgt[0]
-            out[mask, 1] = tgt[1]
-            out[mask, 2] = tgt[2]
-        records.append({"from": format_hex(src), "to": format_hex(tgt), "pixels": hits})
+    hits_by_idx = np.bincount(best_idx[covered], minlength=len(pairs)) if pairs else np.zeros(0, dtype=np.int64)
+    targets = np.array([tgt for _src, tgt in pairs], dtype=arr.dtype).reshape(-1, 3)
+    if covered.any():
+        out[covered, :3] = targets[best_idx[covered]]
+    records = [{"from": format_hex(src), "to": format_hex(tgt), "pixels": int(hits_by_idx[idx])}
+               for idx, (src, tgt) in enumerate(pairs)]
     return out, records, covered
 
 
@@ -296,14 +313,18 @@ def bake(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     variant_reports = []
+    matches: dict[tuple, np.ndarray] = {}  # sources -> match; variants usually share their sources
     for variant in spec["variants"]:
         name = variant["name"]
         pairs = _resolve_map(variant["map"], spec_path, name)
         if spec["match"] == "exact":
             recolored, records, covered = _bake_variant_exact(arr, opaque, pairs)
         else:
+            sources = tuple(src for src, _tgt in pairs)
+            if sources not in matches:
+                matches[sources] = _match_tolerance(arr, opaque, list(sources), spec["tolerance"])
             recolored, records, covered = _bake_variant_tolerance(
-                arr, opaque, pairs, spec["tolerance"]
+                arr, opaque, pairs, spec["tolerance"], matches[sources]
             )
         sheet_name = f"{name}.png"
         atomic_save_image(Image.fromarray(recolored, "RGBA"), out_dir / sheet_name)

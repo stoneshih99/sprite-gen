@@ -184,3 +184,32 @@ def test_manifest_propagates_per_variant(tmp_path: Path) -> None:
         assert data["atlas"] == f"{name}.png"
         assert data["sprite_sheet_alpha"] == f"{name}.png"
         assert data["cell"] == {"width": 8}  # unrelated fields untouched
+
+
+def _reference_tolerance_match(arr, opaque, sources, tolerance):
+    """The original per-source full-image pass, kept as the behaviour reference."""
+    rgb = arr[:, :, :3].astype(np.int32)
+    best_dist = np.full(arr.shape[:2], np.iinfo(np.int32).max, dtype=np.int32)
+    best_idx = np.full(arr.shape[:2], -1, dtype=np.int32)
+    for idx, src in enumerate(sources):
+        delta = np.abs(rgb - np.array(src, dtype=np.int32))
+        within = opaque & (delta.max(axis=2) <= tolerance)
+        l2 = (delta * delta).sum(axis=2)
+        take = within & (l2 < best_dist)
+        best_dist = np.where(take, l2, best_dist)
+        best_idx = np.where(take, idx, best_idx)
+    return best_idx
+
+
+def test_unique_colour_match_equals_the_per_source_pass():
+    from sprite_gen.effects.recolor import _match_tolerance
+    rng = np.random.default_rng(7)
+    arr = rng.integers(0, 256, size=(64, 96, 4), dtype=np.uint8)
+    arr[:, :, :3] //= 16  # few distinct colours, many ties and overlaps
+    arr[:, :, :3] *= 16
+    opaque = arr[:, :, 3] > 8
+    sources = [tuple(int(c) for c in rng.integers(0, 256, size=3)) for _ in range(40)]
+    sources += [sources[3], (32, 32, 32), (48, 32, 32)]  # duplicates and equidistant neighbours: map order wins
+    for tolerance in (0, 8, 24, 64):
+        expected = _reference_tolerance_match(arr, opaque, sources, tolerance)
+        assert np.array_equal(_match_tolerance(arr, opaque, sources, tolerance), expected), tolerance
