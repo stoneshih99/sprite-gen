@@ -72,7 +72,7 @@ not restate it elsewhere; point here.
 <target>/assets/generated/sprites/<character-id>/
   sprite-request.json                # numeric SSoT (cell, chroma, states, fit) — every stage reads this
   base-source.<ext>                  # identity truth; drives the view's base reference row (§3)
-  references/layout-guides/<state>.png   # per-state layout guide (motion only)
+  references/layout-guides/<state>.png   # per-state layout guide (geometry; foot marks for a declared gait)
   references/anchors/<dir>-anchor-x8.png # DERIVED CACHE: the curated direction-anchor frame, baked
                                          #   ×8 NEAREST for row generation. `sprite-gen anchor`
                                          #   (SSoT sprite_gen/curate/anchor.py) rewrites it on demand —

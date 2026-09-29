@@ -186,7 +186,8 @@ in one image.
      identity rendering, for non-locomotion states only
    - locomotion motion sheet/contact sheet: foot-contact phase and gait rhythm
    - paired basis row: timing, scale, and animation intensity
-   - layout guide: frame count, slots, centers and margins only
+   - layout guide: frame count, slots, centers and margins only (plus foot-contact
+     marks when the row declares `gait`)
    The row prompt must keep character detail as an already-approved idle-anchor input and
    spend its degrees of freedom on animation only: limb contacts, arm
    counter-swing, body height, torso lean, head bob, hair bounce, and loop seam.

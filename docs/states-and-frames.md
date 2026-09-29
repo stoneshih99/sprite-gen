@@ -68,6 +68,28 @@ Keep default simple actions short. More frames do not automatically create smoot
 
 If a user asks for 9 or 12 frames, run it as an explicit experiment and report `duplicate-heavy`, `blur/merge`, or `extract-fail` honestly instead of treating it as a normal pass.
 
+## Ground-Contact Gait
+
+A walk or run row is drawn in place: the body stays on the slot centre and the game moves the sprite. The feet only read as gripping the ground when the planted foot slides backward, relative to the body, by exactly the distance the game moves the sprite in that time. Image models get leg alternation right far more often than that spacing — a row can alternate cleanly and still skate, the planted foot creeping 5 px in one frame and jumping 40 px into the next contact.
+
+Declare the travel on the state so generation and extraction both hold the row to it:
+
+```json
+"walk": { "frames": 6, "fps": 13, "loop": true, "action": "...",
+          "gait": { "ground_travel": 118, "steps": 2, "tolerance": 0.25 } }
+```
+
+- `ground_travel` (required): final cell pixels the sprite moves in the game during one loop, i.e. speed × pixels-per-unit × frames ÷ fps.
+- `steps`: foot contacts per loop, `2` for a biped. `frames` must be a multiple of it. Default `2`.
+- `tolerance`: allowed relative error of the measured travel. Default `0.25`.
+
+What it changes:
+
+- **Prepare** draws a ground line on the guide's bottom safe edge and one orange mark per slot: filled where the planted sole touches down, hollow for the trailing sole on contact frames. A step is `ground_travel / steps` long; the leading foot lands half a step ahead of the slot centre and the mark moves back `ground_travel / frames` every frame. The row prompt tells the model to put the planted foot on its mark and never to draw the marks.
+- **Extract** measures the row after fit: the opaque runs in the lowest 4 px of the loop are the soles, each is matched to the nearest sole behind it in the next frame (the loop wraps), and the per-frame moves add up to the measured travel. A match further back than 1.5 frames of travel is the other foot and does not count, so a planted foot that jumps into a contact frame measures short even when the loop total adds up. Outside the tolerance the row fails with a `<state>: gait: …` error and is not published; the manifest row records `gait` (`measured_travel`, `ratio`, `per_frame`) either way.
+
+Rows without `gait` keep the geometry-only guide and are never measured. Implementation: `sprite_gen/spec/gait.py`.
+
 ## Related
 
 - [`../SKILL.md`](../SKILL.md) — canonical behavior contract

@@ -82,7 +82,8 @@ boundary instead of a memory.
 - **B1 — `prepare` re-emits the request from a whitelist.** `prepare._run` builds a
   fresh dict (`version`/`kind`/`engine`/`character`/`cell`/`chroma_key`/`states`/
   `style`, plus `directions`/`layout`/`fit` when present), and
-  `normalize_states` rebuilds each state entry as `frames`/`fps`/`loop`/`action`.
+  `normalize_states` rebuilds each state entry as `frames`/`fps`/`loop`/`action`
+  (plus `track` and `gait` when declared).
   Anything else in `--request` / `--request-json` is dropped, and the command still
   exits 0 — measured, not inferred: a request carrying `rig`, `tracks` and
   `states.idle.takes` came back out with none of the three. So `takes` (a
@@ -422,7 +423,7 @@ list is dropped — and every drop is now named on stderr:
 
 ```text
 [prepare] dropped top-level request key(s) ['notes']: prepare re-emits sprite-request.json from …
-[prepare] dropped states.idle key(s) ['takes']: a state entry is rebuilt as ['frames', 'fps', 'loop', 'action', 'track']
+[prepare] dropped states.idle key(s) ['takes']: a state entry is rebuilt as ['frames', 'fps', 'loop', 'action', 'track', 'gait']
 ```
 
 That note is the contract, not a courtesy: `states.<state>.takes` is a documented

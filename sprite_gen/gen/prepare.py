@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw
 from sprite_gen.curate.anchor import anchor_ref_rel
 from sprite_gen.frames.extract import color_distance
 from sprite_gen.compose.layers import require_valid_layer_request
+from sprite_gen.spec.gait import normalize_gait, planted_marks
 from sprite_gen.spec.layout import TAXONOMY, guide_rel, prompt_rel, raw_rel
 from sprite_gen.spec.subject import SUBJECTS
 
@@ -456,6 +457,11 @@ def normalize_states(raw: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
         # run (`has_layer_contract`).
         if entry.get("track") is not None:
             normalized[state]["track"] = entry["track"]
+        # Ground-contact gait (sprite_gen/spec/gait.py) is carried only when
+        # declared, for the same reason: undeclared rows keep the geometry-only
+        # guide and are never stride-checked.
+        if entry.get("gait") is not None:
+            normalized[state]["gait"] = normalize_gait(state, entry["gait"], frames)
     return normalized
 
 
@@ -473,7 +479,7 @@ REQUEST_KEYS_CARRIED = ("cell", "states", "style",
 # note names it separately: `character` comes from --character-id/--description/
 # --base-image, `chroma_key` from --chroma-key + the base image.
 REQUEST_KEYS_REGENERATED = ("version", "kind", "engine", "character", "chroma_key", "layout")
-STATE_KEYS_CARRIED = ("frames", "fps", "loop", "action", "track")
+STATE_KEYS_CARRIED = ("frames", "fps", "loop", "action", "track", "gait")
 
 
 def dropped_key_notes(raw_request: dict[str, Any]) -> list[str]:
@@ -725,7 +731,17 @@ def directional_requirements(state: str) -> list[str]:
     return requirements
 
 
-def draw_guide(path: Path, frames: int, cell: dict[str, Any]) -> None:
+GUIDE_GROUND = "#8c8f94"
+GUIDE_FOOT = "#f08c00"
+GUIDE_FOOT_RADIUS = 5
+
+
+def draw_guide(path: Path, frames: int, cell: dict[str, Any], gait: dict[str, Any] | None = None) -> None:
+    """Slot geometry; with a declared gait, also a ground line and foot-contact marks.
+
+    The marks are the planted sole (filled) and, on contact frames, the trailing
+    sole (hollow), relative to the slot centre, stepping back evenly each frame.
+    """
     cell_width = int(cell["width"])
     cell_height = int(cell["height"])
     safe_margin_x = int(cell["safe_margin_x"])
@@ -746,8 +762,38 @@ def draw_guide(path: Path, frames: int, cell: dict[str, Any]) -> None:
         )
         draw.rectangle(safe, outline="#2f80ed", width=2)
         draw.line((left + cell_width // 2, safe_margin_y, left + cell_width // 2, height - safe_margin_y), fill="#b8c8e8", width=1)
+    if gait:
+        ground = height - 1 - safe_margin_y
+        radius = GUIDE_FOOT_RADIUS
+        for index, (planted, trailing) in enumerate(planted_marks(gait, frames)):
+            left = index * cell_width
+            centre = left + cell_width / 2
+            draw.line((left + safe_margin_x, ground, left + cell_width - 1 - safe_margin_x, ground), fill=GUIDE_GROUND, width=2)
+            x = centre + planted
+            draw.ellipse((x - radius, ground - radius, x + radius, ground + radius), fill=GUIDE_FOOT)
+            if trailing is not None:
+                x = centre + trailing
+                draw.ellipse((x - radius, ground - radius, x + radius, ground + radius), outline=GUIDE_FOOT, width=2)
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
+
+
+def gait_requirements(entry: dict[str, Any], cell_width: int) -> list[str]:
+    """Prompt lines for a declared ground-contact gait (none otherwise)."""
+    gait = entry.get("gait")
+    if not gait:
+        return []
+    frames = int(entry["frames"])
+    per_frame = float(gait["ground_travel"]) / frames
+    step = float(gait["ground_travel"]) / int(gait["steps"])
+    return [
+        "Ground contact: the attached layout guide draws a grey ground line and orange foot marks in every slot. "
+        "The filled mark is where the planted foot's sole touches the ground in that frame; the hollow mark on a contact frame is the trailing foot.",
+        f"The marks step backward by the same distance every frame (about {per_frame:.0f} px of a {cell_width} px slot, "
+        f"a {step:.0f} px step), so the planted foot must sit exactly on its mark: it grips the ground while the body moves forward at a steady speed. "
+        "Do not let the planted foot creep in some frames and jump in others.",
+        "Keep the feet on the guide's ground line and the body at the scale the marks imply; never draw the ground line or the marks.",
+    ]
 
 
 def row_prompt(request: dict[str, Any], state: str, entry: dict[str, Any]) -> str:
@@ -763,6 +809,7 @@ def row_prompt(request: dict[str, Any], state: str, entry: dict[str, Any]) -> st
         *direction_prefix_requirements(request, state),
         *directional_requirements(state),
         *STATE_REQUIREMENTS.get(state, []),
+        *gait_requirements(entry, cell_width),
     ]
     state_requirement_text = ""
     if state_requirements:
@@ -774,7 +821,7 @@ def row_prompt(request: dict[str, Any], state: str, entry: dict[str, Any]) -> st
     reference_contract = (
         "Use the attached accepted idle/direction anchor as the canonical character design for this row. "
         "If a state anchor is attached for a non-locomotion state, treat it as approved state vocabulary only. "
-        "Use the attached layout guide image only for frame count, slot spacing, centering, and safe padding. "
+        "Use the attached layout guide image only for frame count, slot spacing, centering, safe padding, and, when it draws them, ground-contact foot marks. "
         "If an additional generated row strip is attached, use it only as a motion reference, never as a replacement identity source. "
         "Do not simply copy the still reference pose. Generate distinct animation poses that create a readable cycle or action."
     )
@@ -812,7 +859,7 @@ Transparency and artifact rules:
 Layout requirements:
 - Exactly {frames} full-body frames, left to right, in one horizontal row.
 - The attached layout guide shows the {frames} frame boxes, inner safe area, and centers for this row. Follow its slot count, spacing, centering, and padding.
-- Do not reproduce the layout guide itself: no visible boxes, guide lines, center marks, labels, guide colors, or guide background may appear in the output.
+- Do not reproduce the layout guide itself: no visible boxes, guide lines, center marks, ground lines, foot marks, labels, guide colors, or guide background may appear in the output.
 - Treat the image as {frames} equal-width invisible {runtime_size} frame slots. Fill every slot: each requested slot must contain exactly one complete full-body pose.
 - Spread the {frames} poses evenly across the whole image width. Do not leave any requested slot blank or create large empty gaps between poses.
 - Center one complete pose in each slot. No pose may cross into the neighboring slot.
@@ -1013,6 +1060,7 @@ def _run(args: argparse.Namespace):
             guide_path,
             int(entry["frames"]),
             cell,
+            entry.get("gait"),
         )
         prompt_path.write_text(row_prompt(request, state, entry).rstrip() + "\n", encoding="utf-8")
 

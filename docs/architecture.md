@@ -174,7 +174,10 @@ Every run starts here. It owns the recipe consumed by both prompts and scripts:
   forced. The key is picked **away from the subject's dominant hue** because
   extraction eats chroma-adjacent tint (behavior contract:
   [`chroma-alpha.md`](chroma-alpha.md)).
-- `states` is a free map; `frames`/`fps`/`loop`/`action` per state.
+- `states` is a free map; `frames`/`fps`/`loop`/`action` per state. A locomotion
+  row may declare `gait` (`ground_travel`, `steps`, `tolerance`): the guide then
+  marks where each planted foot lands and extraction fails the row when the feet
+  slide ([`states-and-frames.md`](states-and-frames.md#ground-contact-gait)).
 - `fit` is optional (absent = legacy behavior): `resample`/`align_x`/`align_y`
   tuning, or the full deterministic `pixel_unfake` mode (§6.1). Behavior
   contract: [`pixel-unfake.md`](pixel-unfake.md).
