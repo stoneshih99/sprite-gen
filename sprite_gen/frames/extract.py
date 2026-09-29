@@ -20,6 +20,7 @@ from PIL import Image, ImageChops
 
 from sprite_gen._deps import np
 from sprite_gen.curate.curation import effective_logical_height, pixel_snap_scale
+from sprite_gen.spec.gait import gait_error, measure_gait, normalize_gait
 from sprite_gen.spec.layout import frames_dir_rel, raw_rel, take_raw_rel
 from sprite_gen.spec.runio import (REQUEST_FILENAME, acquire_run_dir_lock, atomic_save_image,
                               atomic_write_text, load_request, publish_guard, relative_posix,
@@ -3409,6 +3410,14 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
                 orig_paths.append(f"{rel_dir}/orig/frame-{index}.png")
 
         errors, warnings, frame_records = inspect_frames(frames, chroma_key, args)
+        # 선언된 보행(gait)만 보폭을 잰다 — 디딘 발이 게임 이동 거리만큼 뒤로 가지 않으면 미끄러진다
+        gait = (request["states"].get(state) or {}).get("gait")
+        gait_result = None
+        if gait:
+            gait = normalize_gait(state, gait, frame_count)
+            gait_result = measure_gait(frames[:frame_count], gait)
+            if not gait_result["ok"]:
+                errors.append(gait_error(gait_result, gait["tolerance"]))
         all_errors.extend(f"{state}: {error}" for error in errors)
         all_warnings.extend(f"{state}: {warning}" for warning in warnings)
         row = {
@@ -3422,6 +3431,8 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
             # 비교해 stale 행을 raw 에서 자동 재유도한다 (self-heal).
             "engine_revision": engine_revision(),
         }
+        if gait_result is not None:
+            row["gait"] = gait_result
         if labels and any(labels):
             row["labels"] = labels
         if takes:

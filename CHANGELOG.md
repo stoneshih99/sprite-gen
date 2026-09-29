@@ -2,7 +2,10 @@
 
 All notable public changes to `sprite-gen` are recorded here. Versions track the `version:` field in `SKILL.md` and `pyproject.toml`.
 
-## Unreleased (fork) - One body height across state rows
+## Unreleased (fork) - One body height across state rows, and walks that grip the ground
+
+- A state may declare `gait` (`ground_travel` in cell px per loop, `steps`, `tolerance`). `prepare` carries it into `sprite-request.json`, draws a ground line and one foot-contact mark per slot on that row's layout guide (the planted sole steps back `ground_travel / frames` every frame) and tells the model to plant a foot on each mark. `extract` measures how far the grounded soles move back over the loop, counting a move only when it stays within 1.5 frames of travel so a foot that jumps into the contact frame does not count, and fails the row outside the tolerance with a `<state>: gait:` error; the manifest row records the measurement. On a fumo walk row that alternated its legs cleanly the planted feet moved 58 px per loop against 124 px of game travel (5 to 44 px per frame) and read as sliding. Rows without `gait` are unchanged. Method: [docs/states-and-frames.md](docs/states-and-frames.md#ground-contact-gait).
+- `sprite-gen prepare` no longer fails on every call with `unexpected keyword argument(s): fit_row_scale, fit_strip_panel_lines`: prepare's own parser now knows `--fit-row-scale`, `--fit-strip-panel-lines` and `--fit-align-x torso`, which the CLI already offered.
 
 - Component-row fit takes `fit.body_height` (px) and `fit.pose_heights` (`{state: ratio}`). Each row's median solid height — measured after an opening that drops parts thinner than 4 % of the pose, so a raised weapon does not count — is fitted to `body_height × pose_heights[state]`, so a character drawn at different sizes in separately generated rows comes out one size, and a kneel no longer grows to the standing height. Without `body_height` nothing changes. `state_fit()` resolves a row's ratio; `solid_height()` is the measurement.
 
