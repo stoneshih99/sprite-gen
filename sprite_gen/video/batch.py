@@ -35,18 +35,21 @@ START_GAP_SECONDS = 2.0
 # for jump/attack, which the one-shot cut handles; 6 s bought nothing but a longer wait
 # and, for jump, more idle standing between hops.
 DEFAULT_DURATION_SECONDS = 3
-# An attack is timed rather than repeated: a windup, one strike, a held impact pose and the
-# recovery, twice. Four seconds holds both attacks at the stated timing; a shorter clip squeezes
-# them, a longer one stretches them.
-STATE_DURATION_SECONDS = {"attack": 4}
+# An attack is one timed strike: a windup, the strike, a held impact pose and the recovery, about
+# 1.6 s at the stated timing. Two seconds holds it with the stance on either side; asked for 3 or
+# 4 s, the clip still struck once and held the impact pose for about half of it.
+STATE_DURATION_SECONDS = {"attack": 2}
 # States whose clip is pinned to end on the frame it starts from (first-last mode): the model
 # has to come back to the still, which closes a one-shot action instead of leaving it wherever
 # the strike ended, and closes an idle without asking for a repeating rhythm.
 PIN_LAST_FRAME_STATES = frozenset({"attack", "idle"})
 # Pinned states whose whole clip is the loop: it starts and ends on the canvas, so `video-loop
-# --cycle pinned` keeps every frame but the last (a re-render of the first). An attack is
-# pinned too but is cut as the one-shot it is.
-PINNED_LOOP_STATES = frozenset({"idle"})
+# --cycle pinned` keeps every frame but the last (a re-render of the first). An attack asked
+# for once is ready stance -> strike -> ready stance, so its whole clip is one attack too.
+PINNED_LOOP_STATES = frozenset({"idle", "attack"})
+# States filmed as a fast action (`ACTION_COMMON_TEXT`): crisp frames, what they hold kept inside
+# the frame, and no "evenly paced" line.
+ACTION_TEXT_STATES = frozenset({"attack"})
 RETRY_BACKOFF_SECONDS = (15, 30)
 
 
@@ -57,6 +60,16 @@ VIEW_TEXT = {
     "side": "seen from the exact side, facing {facing}",
     "front": "seen from the front, facing the viewer directly",
     "back": "seen from directly behind, facing away from the viewer",
+}
+# What stays put while an attack moves, said once: after the built-in attack sentence and after a
+# caller's own motion paragraph alike. A request interpreter writes its motion before the still
+# exists, so it cannot know where the other hand's shield or lantern is drawn; the engine holds it.
+HOLD_TEXT = {
+    "attack": (
+        "Every grip stays exactly as shown in the image: one hand stays one hand, both hands stay both hands, "
+        "and nothing is let go or switched to the other hand. A hand the motion does not use stays where it is "
+        "drawn, with anything it holds, and the body keeps facing the same direction without turning."
+    ),
 }
 MOTION_TEXT = {
     # A side-view full body asked for "a subtle weight sway" and an evenly paced loop steps in place
@@ -71,12 +84,10 @@ MOTION_TEXT = {
     "run": "moves in place on a treadmill: a fast locomotion cycle for this body type with a bounding rhythm and clear repeating ground contacts.",
     "jump": "performs a modest vertical hop in place over and over: compress, spring up about half the body height, land softly, return to the exact starting stance, repeat at an even rhythm. Same height every time.",
     "attack": (
-        "performs the same melee attack twice in a row with what it is already holding, gripped exactly as in the image "
-        "— one hand stays one hand, both hands stay both hands — (bare hands only if it holds nothing), keeping every "
-        "piece of its gear and outfit exactly as drawn. Each attack is a windup (about 0.5 s), one clean strike in front "
+        "performs one melee attack with what it is already holding (bare hands only if it holds nothing), keeping "
+        "every piece of its gear and outfit exactly as drawn: a windup (about 0.5 s), one clean strike in front "
         "(about 0.25 s), a held impact pose (about 0.3 s), then a recovery to the exact starting stance (about 0.5 s). "
-        "What it holds is never let go, switched to the other hand or taken in an extra hand, and the body keeps facing "
-        "the same direction without turning."
+        + HOLD_TEXT["attack"]
     ),
     "cheer": "celebrates in place: rises into a raised, spread-out cheer pose, holds it for a beat, then settles back to the exact starting stance, repeating at an even rhythm.",
     "wave": "waves in place: lifts one side into a friendly wave, sways it a few times, then settles back to the exact starting stance, repeating at an even rhythm.",
@@ -106,9 +117,9 @@ ACTION_COMMON_TEXT = (
     "for the whole clip — no shadows, no ground line, no particles, no lighting changes, no effects. Keep the design, "
     "colors and proportions exactly as in the image. Crisp, clean frames with no motion blur, no smears and no afterimages."
 )
-# A caller's own motion paragraph (`build_prompt(motion=...)`) says what one attack is; this says
-# how many to make, the same count the built-in attack text asks for.
-REPEAT_TEXT = {"attack": "Perform this attack twice in a row with the same timing each time."}
+# How many times a caller's own motion paragraph (`build_prompt(motion=...)`) is performed, for
+# states that repeat it. An attack is performed once: its pinned clip is the loop.
+REPEAT_TEXT: dict[str, str] = {}
 
 _start_lock = threading.Lock()
 _last_start = [0.0]
@@ -127,14 +138,15 @@ def build_prompt(direction: str, state: str, character: str | None, facing: str 
 
     `motion` replaces the built-in state sentence with the caller's own description of the
     motion, written as whole sentences about the subject (a request interpreter's output, for
-    instance). The frame, camera, background and design rules stay the engine's.
+    instance). What stays put (`HOLD_TEXT`), the repeat count (`REPEAT_TEXT`) and the frame,
+    camera, background and design rules stay the engine's.
     """
     validate_facing(facing)
     view = VIEW_TEXT.get(direction, f"seen from the {direction}").format(facing=facing)
-    if state in PINNED_LOOP_STATES:
-        template = PINNED_LOOP_TEXT
-    elif state in PIN_LAST_FRAME_STATES:
+    if state in ACTION_TEXT_STATES:
         template = ACTION_COMMON_TEXT
+    elif state in PINNED_LOOP_STATES:
+        template = PINNED_LOOP_TEXT
     else:
         template = COMMON_TEXT
     if motion is not None:
@@ -142,9 +154,10 @@ def build_prompt(direction: str, state: str, character: str | None, facing: str 
         if not motion:
             raise SystemExit("video: motion description is empty")
         head = "2D game sprite animation. The character {motion} The character is {view}."
+        hold = f" {HOLD_TEXT[state]}" if state in HOLD_TEXT else ""
         repeat = f" {REPEAT_TEXT[state]}" if state in REPEAT_TEXT else ""
         subject = character.strip().rstrip(".") if character else "The character"
-        return f"2D game sprite animation. {motion}{repeat} {subject} is {view}." + template[len(head):]
+        return f"2D game sprite animation. {motion}{hold}{repeat} {subject} is {view}." + template[len(head):]
     text = template.format(motion=MOTION_TEXT.get(state, f"performs the '{state}' action in place, repeating at an even rhythm."), view=view)
     return text.replace("The character", character, 1) if character else text
 
