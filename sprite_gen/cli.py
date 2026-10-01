@@ -67,6 +67,8 @@ def _add_prepare(p: argparse.ArgumentParser) -> None:
     p.add_argument("--fit-resample", choices=["lanczos", "nearest", "kcentroid"], default=None)
     p.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid"], default=None)
     p.add_argument("--fit-align-y", choices=["center", "bottom"], default=None)
+    p.add_argument("--fit-row-scale", action=argparse.BooleanOptionalAction, default=None,
+                   help="use one downscale factor for every pose in a non-pixel row")
     p.add_argument("--fit-ground-frames", action=argparse.BooleanOptionalAction, default=None)
     p.add_argument("--fit-pixel-unfake", action=argparse.BooleanOptionalAction, default=None)
     # 은퇴한 이름. 조용한 별칭으로 살려두지 않는다 — 두 이름이 공존하면 문서와 스크립트가

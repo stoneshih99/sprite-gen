@@ -2,12 +2,27 @@
 """Quickstart smoke: prepare -> extract -> compose on the golden fixture."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
 from conftest import run_script
+
+
+@pytest.mark.parametrize("flag,expected", [("--fit-row-scale", True), ("--no-fit-row-scale", False), (None, None)])
+def test_canonical_prepare_row_scale(tmp_path: Path, flag: str | None, expected: bool | None) -> None:
+    out_dir = tmp_path / "canonical-run"
+    command = [sys.executable, "-m", "sprite_gen.cli", "prepare", "--out-dir", str(out_dir),
+               "--character-id", "smokebot"]
+    if flag:
+        command.append(flag)
+    result = subprocess.run(command, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    request = json.loads((out_dir / "sprite-request.json").read_text())
+    assert request.get("fit", {}).get("row_scale") is expected
 
 
 def test_prepare_writes_run_contract(tmp_path: Path) -> None:
@@ -37,6 +52,7 @@ def test_prepare_records_fit_cli_flags_in_request(tmp_path: Path) -> None:
         "--fit-resample", "kcentroid",
         "--fit-align-x", "foot-centroid",
         "--fit-align-y", "center",
+        "--fit-row-scale",
         "--no-fit-ground-frames",
         "--fit-pixel-unfake",
         "--fit-logical-height", "64",
@@ -49,6 +65,7 @@ def test_prepare_records_fit_cli_flags_in_request(tmp_path: Path) -> None:
         "resample": "kcentroid",  # CLI overrides the --request-json value
         "align_x": "foot-centroid",
         "align_y": "center",
+        "row_scale": True,
         "ground_frames": False,
         "pixel_unfake": True,
         "logical_height": 64,

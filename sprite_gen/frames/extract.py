@@ -1264,6 +1264,7 @@ def fit_to_cell(
     safe_margin_x: int,
     safe_margin_y: int,
     fit: dict[str, Any] | None = None,
+    scale_override: float | None = None,
 ) -> Image.Image:
     # `fit` comes from sprite-request.json ("fit" object):
     #   resample: "lanczos" (default) | "nearest" | "kcentroid" — kcentroid is the
@@ -1283,6 +1284,7 @@ def fit_to_cell(
     resample_name = str(fit.get("resample", "lanczos")).lower()
     align_x = str(fit.get("align_x", "foot-centroid")).lower()
     align_y = str(fit.get("align_y", "bottom")).lower()
+    horizontal_margin = safe_margin_x if scale_override is not None else 0
     bbox = image.getbbox()
     target = Image.new("RGBA", (cell_width, cell_height), (0, 0, 0, 0))
     if bbox is None:
@@ -1290,7 +1292,8 @@ def fit_to_cell(
     sprite = image.crop(bbox)
     max_width = max(1, cell_width - safe_margin_x * 2)
     max_height = max(1, cell_height - safe_margin_y * 2)
-    scale = min(max_width / sprite.width, max_height / sprite.height, 1.0)
+    scale = (min(max_width / sprite.width, max_height / sprite.height, 1.0)
+             if scale_override is None else min(scale_override, 1.0))
     if scale != 1.0:
         new_size = (max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale)))
         if resample_name == "kcentroid":
@@ -1305,15 +1308,13 @@ def fit_to_cell(
             sprite = sprite.crop(cropped)
     if align_x == "foot-centroid":
         left = round(cell_width / 2.0 - _alpha_centroid_x(sprite, 0.2))
-        left = max(0, min(cell_width - sprite.width, left))
     elif align_x == "centroid":
         left = round(cell_width / 2.0 - _alpha_centroid_x(sprite))
-        left = max(0, min(cell_width - sprite.width, left))
     elif align_x == "alpha-centroid":
         left = round(cell_width / 2.0 - _alpha_centroid_x(sprite, 1.0, ALPHA_CENTROID_MIN_ALPHA))
-        left = max(0, min(cell_width - sprite.width, left))
     else:
         left = (cell_width - sprite.width) // 2
+    left = max(horizontal_margin, min(cell_width - horizontal_margin - sprite.width, left))
     if align_y == "bottom":
         top = max(0, cell_height - safe_margin_y - sprite.height)
     else:
@@ -2561,20 +2562,46 @@ def extract_component_images(strip: Image.Image, frame_count: int) -> list[Image
     return [component_group_image(strip, group) for group in groups]
 
 
-def extract_component_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None) -> list[Image.Image] | None:
+def _shared_row_scale(images: list[Image.Image], cell_width: int, cell_height: int,
+                      safe_margin_x: int, safe_margin_y: int) -> float:
+    max_width = max(1, cell_width - safe_margin_x * 2)
+    max_height = max(1, cell_height - safe_margin_y * 2)
+    scales = []
+    for image in images:
+        bbox = image.getbbox()
+        if bbox is None:
+            continue
+        width, height = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        scales.append(min(max_width / width, max_height / height, 1.0))
+    return min(scales, default=1.0)
+
+
+def extract_component_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None, scale_info: dict[str, float] | None = None) -> list[Image.Image] | None:
     images = extract_component_images(strip, frame_count)
     if images is None:
         return None
-    return [fit_to_cell(image, cell_width, cell_height, safe_margin_x, safe_margin_y, fit) for image in images]
+    fit = fit or {}
+    shared_scale = (_shared_row_scale(images, cell_width, cell_height, safe_margin_x, safe_margin_y)
+                    if fit.get("row_scale") and not fit.get("pixel_unfake") else None)
+    if shared_scale is not None and scale_info is not None:
+        scale_info["factor"] = shared_scale
+    return [fit_to_cell(image, cell_width, cell_height, safe_margin_x, safe_margin_y, fit, shared_scale) for image in images]
 
 
-def extract_slot_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None) -> list[Image.Image]:
+def extract_slot_frames(strip: Image.Image, frame_count: int, cell_width: int, cell_height: int, safe_margin_x: int, safe_margin_y: int, fit: dict[str, Any] | None = None, scale_info: dict[str, float] | None = None) -> list[Image.Image]:
     slot_width = strip.width / frame_count
     frames = []
     for index in range(frame_count):
         left = round(index * slot_width)
         right = round((index + 1) * slot_width)
-        frames.append(fit_to_cell(strip.crop((left, 0, right, strip.height)), cell_width, cell_height, safe_margin_x, safe_margin_y, fit))
+        frames.append(strip.crop((left, 0, right, strip.height)))
+    fit = fit or {}
+    shared_scale = (_shared_row_scale(frames, cell_width, cell_height, safe_margin_x, safe_margin_y)
+                    if fit.get("row_scale") and not fit.get("pixel_unfake") else None)
+    if shared_scale is not None and scale_info is not None:
+        scale_info["factor"] = shared_scale
+    frames = [fit_to_cell(frame, cell_width, cell_height, safe_margin_x, safe_margin_y, fit, shared_scale)
+              for frame in frames]
     return frames
 
 
@@ -3147,7 +3174,8 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
     def finalize_state(state: str, frames: list, frame_count: int, method: str,
                        plain_frames: list | None = None, orig_frames: list | None = None,
                        input_grids: list | None = None, labels: list | None = None,
-                       takes: list | None = None) -> None:
+                       takes: list | None = None,
+                       row_scale_factor: float | None = None) -> None:
         rel_dir = frames_dir_rel(request, state)  # e.g. frames/down/idle (taxonomy) | frames/down_idle (legacy)
         state_dir = frames_root / rel_dir.removeprefix("frames/")
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -3191,6 +3219,8 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
             # 비교해 stale 행을 raw 에서 자동 재유도한다 (self-heal).
             "engine_revision": engine_revision(),
         }
+        if row_scale_factor is not None:
+            row["row_scale"] = {"enabled": True, "factor": row_scale_factor}
         if labels and any(labels):
             row["labels"] = labels
         if takes:
@@ -3416,15 +3446,17 @@ def _run_locked(args: argparse.Namespace, run_dir: Path):
             strip = _load_strip(state, state, raw_rel(request, state), frame_count)
             if strip is None:
                 continue
-            frames = extract_component_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config)
+            row_scale_info: dict[str, float] = {}
+            frames = extract_component_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config, row_scale_info)
             method = "components"
             if frames is None:
                 if not args.allow_slot_fallback:
                     all_errors.append(f"{state}: could not extract {frame_count} sprite components")
                     continue
-                frames = extract_slot_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config)
+                frames = extract_slot_frames(strip, frame_count, cell_width, cell_height, safe_margin_x, safe_margin_y, fit_config, row_scale_info)
                 method = "slots-explicit"
-            finalize_state(state, frames, frame_count, method)
+            finalize_state(state, frames, frame_count, method,
+                           row_scale_factor=row_scale_info.get("factor"))
             continue
         # 테이크 1급 계약: 한 상태의 프레임 풀 = primary 스트립 + 선언된 테이크들.
         # 각 스트립은 독립 생성이므로 따로 스냅하고(스트립별 합의 피치), 행 정합·
