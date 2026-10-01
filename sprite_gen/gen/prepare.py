@@ -725,6 +725,19 @@ def directional_requirements(state: str) -> list[str]:
     return requirements
 
 
+def walk_cycle_requirements(entry: dict[str, Any]) -> list[str]:
+    if not entry.get("loop", False):
+        return []
+    requirements = [
+        "Make every pose progress naturally into the next and the final frame flow smoothly back into the first, with a compatible body pose and gait phase."
+    ]
+    if int(entry["frames"]) == 8:
+        requirements.append(
+            "For an 8-frame loop with a two-legged character, use this order: frame 1 first-side contact/support, frame 2 down/compression, frame 3 passing, frame 4 up/rise, frame 5 opposite-side contact/support, frame 6 down/compression, frame 7 passing, frame 8 up/rise. For other anatomies, adapt the support and limb sequence naturally while keeping all eight phases distinct and ordered."
+        )
+    return requirements
+
+
 def draw_guide(path: Path, frames: int, cell: dict[str, Any]) -> None:
     cell_width = int(cell["width"])
     cell_height = int(cell["height"])
@@ -764,6 +777,12 @@ def row_prompt(request: dict[str, Any], state: str, entry: dict[str, Any]) -> st
         *directional_requirements(state),
         *STATE_REQUIREMENTS.get(state, []),
     ]
+    directions = (request.get("directions") or {}).get("set", [])
+    is_walk = state == "walk" or any(state == f"{direction}_walk" for direction in directions)
+    if is_walk:
+        if state != "walk":
+            state_requirements.extend(STATE_REQUIREMENTS["walk"])
+        state_requirements.extend(walk_cycle_requirements(entry))
     state_requirement_text = ""
     if state_requirements:
         state_requirement_text = "\n\nState-specific requirements:\n" + "\n".join(
@@ -798,8 +817,8 @@ Animation action: {entry["action"]}.
 Anchor lock:
 - Accepted idle/direction anchors own character identity, outfit details, colors, face design, asymmetric markings, and side-specific accessories for final action rows.
 - Base character images and original character sheets are pre-idle sources only. Do not reinterpret or reintroduce base-character details inside a direction-anchor action row.
-- This row owns motion only. Spend the variation budget on limb contacts, arm counter-swing, body height, torso lean, head bob, hair bounce, and loop continuity.
-- Do not redesign or reinterpret identity details while animating. Keep face, hair shape, markings, palette, outline weight, body proportions, outfit, props, and silhouette copied from the approved anchors.
+- This row owns motion only. Spend the variation budget on limb contacts, arm counter-swing, body height, torso lean, head bob, and hair bounce.
+- Do not redesign or reinterpret identity details while animating. Keep face, hair shape, markings, palette, outline weight, body proportions, outfit, props, and identity-defining silhouette traits copied from the approved anchors. Allow action-required limb and body contours to change.
 - Preserve side-specific features exactly as the approved anchors show them. Do not solve hairpin side, earring side, logos, handed props, scars, one-sided markings, asymmetric clothing, or lighting cues from scratch inside the row.
 - When generating a paired left/right row, use the paired row reference only for timing, scale, and animation intensity. Rotate the body, feet, shoulders, face angle, and gaze to the target facing, but keep identity details attached according to the accepted target-direction anchor.
 - For cyclic locomotion, do not let a single running/walking pose anchor determine every frame's leg phase. When a multi-pose motion reference is attached, use it for foot contacts.
@@ -821,7 +840,7 @@ Layout requirements:
 - Keep the rendering faithful to the attached reference sprite: same outline weight, same palette, same detail level — do not restyle it.
 - Keep every frame self-contained with at least {safe_margin_x} px horizontal and {safe_margin_y} px vertical safe padding. No character body part should be clipped by the frame slot.
 - Avoid motion blur. Use clear pose changes readable at {runtime_size}.
-- Preserve the same silhouette, face, proportions, palette, material, and props across every frame.
+- Preserve identity-defining silhouette traits, face, proportions, palette, material, and props; allow action-required limb placement and body contour to vary.
 
 Output only the sprite strip image."""
 
@@ -860,6 +879,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fit-resample", choices=["lanczos", "nearest", "kcentroid"], default=None, help="frame downscale filter; nearest keeps pixel-art edges crisp, kcentroid keeps 1px outlines readable")
     parser.add_argument("--fit-align-x", choices=["bbox-center", "centroid", "foot-centroid", "alpha-centroid"], default=None, help="horizontal frame anchor; centroid stabilizes body position across variable-width poses, foot-centroid anchors on the bottom-20%% alpha (legs), alpha-centroid is the perfectpixel-studio per-frame alpha-weighted centroid (fringe-insensitive, per-frame in the pixel unfake row path)")
     parser.add_argument("--fit-align-y", choices=["center", "bottom"], default=None, help="vertical frame anchor; bottom pins feet to a shared baseline, center pins content to the cell center")
+    parser.add_argument("--fit-row-scale", action=argparse.BooleanOptionalAction, default=None, help="use one downscale factor for every pose in a non-pixel row")
     parser.add_argument("--fit-ground-frames", action=argparse.BooleanOptionalAction, default=None, help="re-anchor each frame to the shared vertical line; disable to preserve deliberate vertical travel")
     parser.add_argument("--fit-pixel-unfake", action=argparse.BooleanOptionalAction, default=None, help="unfake the AI dots: pitch detection -> grid snap -> kCentroid -> shared palette -> integer NEAREST (see docs/pixel-unfake.md)")
     # 은퇴한 이름 (조용한 별칭 금지 — 두 이름이 공존하면 문서·스크립트가 갈라진다)
@@ -979,6 +999,7 @@ def _run(args: argparse.Namespace):
         "resample": args.fit_resample,
         "align_x": args.fit_align_x,
         "align_y": args.fit_align_y,
+        "row_scale": args.fit_row_scale,
         "ground_frames": args.fit_ground_frames,
         "pixel_unfake": args.fit_pixel_unfake,
         "logical_height": args.fit_logical_height,

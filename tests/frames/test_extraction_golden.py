@@ -46,6 +46,21 @@ def test_extracted_frames_are_cell_sized_rgba(fixture_run_dir: Path) -> None:
                 assert frame.size == (EXPECTED["cell"]["width"], EXPECTED["cell"]["height"])
 
 
+def test_row_scale_factor_is_recorded_in_extraction_manifest(fixture_run_dir: Path) -> None:
+    request_path = fixture_run_dir / "sprite-request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["fit"] = {**request.get("fit", {}), "row_scale": True}
+    request_path.write_text(json.dumps(request, indent=2) + "\n", encoding="utf-8")
+
+    result = run_script("extract_sprite_row_frames.py", "--run-dir", str(fixture_run_dir))
+    assert result.returncode == 0, result.stdout + result.stderr
+    manifest = json.loads((fixture_run_dir / "frames" / "frames-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["rows"]
+    for row in manifest["rows"]:
+        assert row["row_scale"]["enabled"] is True
+        assert 0 < row["row_scale"]["factor"] <= 1
+
+
 def test_extraction_fails_without_raw_strip(fixture_run_dir: Path) -> None:
     (fixture_run_dir / "raw" / "walk.png").unlink()
     result = run_script("extract_sprite_row_frames.py", "--run-dir", str(fixture_run_dir))
